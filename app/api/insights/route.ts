@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  return NextResponse.json({ insights: listInsights(session.id) });
+  return NextResponse.json({ insights: await listInsights(session.id) });
 }
 
 /** Regenerates insights over the requested window. */
@@ -26,8 +26,8 @@ export async function POST(request: Request) {
     // No body is fine — default window.
   }
 
-  const boards = listBoards(session.id);
-  const all = listTransactions(session.id);
+  const boards = await listBoards(session.id);
+  const all = await listTransactions(session.id);
   const scoped = withinRange(all, range);
   const summaries = summariseBoards(boards, scoped);
   const totals = computeTotals(scoped, summaries);
@@ -41,6 +41,6 @@ export async function POST(request: Request) {
     currency: scoped[0]?.currency ?? "KES",
   });
 
-  const insights = replaceInsights(session.id, drafts);
+  const insights = await replaceInsights(session.id, drafts);
   return NextResponse.json({ insights });
 }

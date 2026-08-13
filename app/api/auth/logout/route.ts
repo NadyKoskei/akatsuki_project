@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(request: NextRequest) {
   const session = await getSession();
-  if (session) clearTokens(session.id);
+  if (session) await clearTokens(session.id);
   await destroySession();
   return NextResponse.redirect(new URL("/?signed_out=1", request.nextUrl.origin), { status: 303 });
 }

@@ -43,8 +43,7 @@ export default async function DashboardPage({
   const range = parseRange((await searchParams).range);
   const days = rangeDays(range) ?? 90;
 
-  const boards = listBoards(session.id);
-  const all = listTransactions(session.id);
+  const [boards, all] = await Promise.all([listBoards(session.id), listTransactions(session.id)]);
   const scoped = withinRange(all, range);
 
   const summaries = summariseBoards(boards, scoped);
@@ -56,9 +55,9 @@ export default async function DashboardPage({
 
   // First visit: seed the panel from the deterministic engine so it's never
   // empty. The Refresh button is what asks the model for a rewrite.
-  let insights = listInsights(session.id);
+  let insights = await listInsights(session.id);
   if (insights.length === 0 && scoped.length > 0) {
-    insights = replaceInsights(
+    insights = await replaceInsights(
       session.id,
       rulesInsights({ userId: session.id, summaries, transactions: all, totals, rangeDays: days, currency }),
     );
@@ -69,7 +68,7 @@ export default async function DashboardPage({
   return (
     <main className="mx-auto w-full max-w-7xl px-5 py-6 sm:px-8">
       <header className="mb-6 border-b border-[color:var(--border)] pb-5">
-        <AccountBar session={session} lastSync={getLastSync(session.id)} demo={isDemoMode()} />
+        <AccountBar session={session} lastSync={await getLastSync(session.id)} demo={isDemoMode()} />
       </header>
 
       <FilterBar range={range}>

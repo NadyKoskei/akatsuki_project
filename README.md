@@ -205,6 +205,51 @@ Two guards worth knowing about: `assertSandbox()` refuses to start sign-in again
 
 > `.env` is git-ignored by default. Keep sandbox credentials out of commits, screenshots, and this README — see [Hackathon Compliance Notes](#hackathon-compliance-notes).
 
+## Deploying to Vercel + Supabase
+
+### 1. Create the database
+
+In Supabase: **New project**, then **Project Settings → Database → Connection string → URI**. Take the **connection pooler** URI (port `6543`), not the direct `5432` one — serverless functions open many short-lived connections and the pooler is what survives that.
+
+Put it in `.env` locally, then create the tables:
+
+```bash
+npm run db:push        # applies lib/db/schema.sql; idempotent, safe to re-run
+```
+
+You can also paste `lib/db/schema.sql` straight into the Supabase SQL editor. The schema enables row-level security with no policies on every table — Chroma connects over the pooler as `postgres`, which bypasses RLS, while Supabase's public REST API is left with no way in.
+
+### 2. Set the environment variables in Vercel
+
+**Project → Settings → Environment Variables.** Add each one, pick the environments it applies to, then **redeploy** — env changes don't reach existing deployments.
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | the Supabase pooler URI |
+| `JWT_SECRET` | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `LOOP_CLIENT_ID` / `LOOP_API_KEY` / `LOOP_API_SECRET` | from the LOOP sandbox developer portal |
+| `LOOP_API_BASE_URL` | `https://sandbox.loop.co.ke/api` |
+| `APP_BASE_URL` | `https://your-app.vercel.app` |
+| `LOOP_REDIRECT_URI` | `https://your-app.vercel.app/api/loop/callback` |
+| `LOOP_IPN_CALLBACK_URL` | `https://your-app.vercel.app/api/loop/ipn` |
+| `AI_API_KEY` | optional; without it insights come from the rules engine |
+
+Or from the CLI:
+
+```bash
+vercel env add DATABASE_URL production
+vercel --prod
+```
+
+Register `LOOP_REDIRECT_URI` and `LOOP_IPN_CALLBACK_URL` in the LOOP portal exactly as written. Preview deployments get a fresh URL each time, so OAuth only works on the production domain unless you register the preview URL too.
+
+### Deployment gotchas
+
+- **`DATABASE_URL` is not optional once deployed.** Without it the app falls back to the file-backed store, which on Vercel means Boards and tags can vanish between requests — each invocation may be a different instance.
+- **Missing `JWT_SECRET`** doesn't crash the app; sign-in just fails with "Chroma couldn't complete the handshake with LOOP" and the reason in the URL. If you see that, this is usually why.
+- **Tables not created** surfaces as a clear error naming `npm run db:push` rather than a raw Postgres code.
+- Placeholder values (`your_…`) are read as unset, so a half-filled env leaves the app in seeded-demo mode rather than throwing.
+
 ## Project Structure
 
 ```
@@ -244,7 +289,9 @@ chroma/
 
 **Insights can't invent numbers.** The rules engine computes every figure from the LOOP data; the model is handed those pre-formatted figures and asked only to write the sentence, with a JSON schema constraining the shape. No key, a refusal, or a network failure all fall back to the rules output, so the panel is never blank.
 
-**Storage.** Out of the box, state lives in a file-backed store under `.data/` (git-ignored) — enough for the hackathon build, and swappable by reimplementing `lib/db/store.ts` against Postgres. LOOP token sets are encrypted at rest with AES-256-GCM under a key derived from `JWT_SECRET`; rotating the secret simply forces re-authorisation through LOOP.
+**Storage is one interface, two backends.** `lib/db/backend.ts` defines the contract; `lib/db/store.ts` picks the implementation at first use — Postgres when `DATABASE_URL` is set, the file-backed store under `.data/` otherwise. Nothing else in the codebase knows which is live, so local development needs no database and deployment needs no code change. LOOP token sets are encrypted with AES-256-GCM *before* they reach either backend, under a key derived from `JWT_SECRET`, so Postgres never stores a usable token; rotating the secret simply forces re-authorisation through LOOP.
+
+A re-sync updates LOOP's facts (amount, counterparty, timestamp) and deliberately leaves `board_id` alone — the transaction belongs to LOOP, the tag belongs to the user. Deleting a Board untags its transactions via `on delete set null` rather than deleting anything LOOP sent.
 
 ## MVP Scope (Hackathon Build)
 

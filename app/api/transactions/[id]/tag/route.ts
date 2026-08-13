@@ -24,7 +24,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "boardId must be a Board id or null." }, { status: 400 });
   }
 
-  const txn = tagTransaction(session.id, id, boardId);
+  const txn = await tagTransaction(session.id, id, boardId);
   if (!txn) return NextResponse.json({ error: "Transaction or Board not found." }, { status: 404 });
   return NextResponse.json({ transaction: txn });
 }

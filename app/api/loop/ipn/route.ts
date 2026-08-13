@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
   const envelope = parseIpnPayload(payload);
   if (!envelope) return NextResponse.json({ error: "unrecognised payload" }, { status: 400 });
 
-  const user = findUserByLoopRef(envelope.accountRef);
+  const user = await findUserByLoopRef(envelope.accountRef);
   // 200 on an unknown account: the notification is valid, we just don't hold
   // that account. Returning an error would make LOOP retry forever.
   if (!user) return NextResponse.json({ ok: true, matched: false });
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
   if (!txn) return NextResponse.json({ error: "transaction missing id or timestamp" }, { status: 400 });
 
   // live:true puts it at the top of the "which Board is this for?" queue.
-  upsertTransactions([{ ...txn, live: true }]);
+  await upsertTransactions([{ ...txn, live: true }]);
 
   return NextResponse.json({ ok: true, matched: true, transactionId: txn.id });
 }

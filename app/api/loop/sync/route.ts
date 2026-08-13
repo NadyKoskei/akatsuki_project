@@ -30,7 +30,10 @@ export async function POST() {
       }
       if (err.isRateLimited) {
         return NextResponse.json(
-          { error: "LOOP is rate-limiting us. Your existing transactions are still here.", lastSync: getLastSync(session.id) },
+          {
+            error: "LOOP is rate-limiting us. Your existing transactions are still here.",
+            lastSync: await getLastSync(session.id),
+          },
           { status: 429 },
         );
       }

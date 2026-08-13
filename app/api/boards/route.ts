@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  return NextResponse.json({ boards: listBoards(session.id) });
+  return NextResponse.json({ boards: await listBoards(session.id) });
 }
 
 export async function POST(request: Request) {
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   if (!name) return NextResponse.json({ error: "A Board needs a name." }, { status: 400 });
   if (name.length > 40) return NextResponse.json({ error: "Board names cap at 40 characters." }, { status: 400 });
 
-  const existing = listBoards(session.id);
+  const existing = await listBoards(session.id);
   if (existing.length >= 24) {
     return NextResponse.json({ error: "24 Boards is the limit for the sandbox build." }, { status: 400 });
   }
@@ -48,6 +48,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Budget must be a number." }, { status: 400 });
   }
 
-  const board = createBoard({ userId: session.id, name, colorCode, budgetAmount });
+  const board = await createBoard({ userId: session.id, name, colorCode, budgetAmount });
   return NextResponse.json({ board }, { status: 201 });
 }

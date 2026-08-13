@@ -40,7 +40,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
   }
 
-  const board = updateBoard(session.id, id, patch);
+  const board = await updateBoard(session.id, id, patch);
   if (!board) return NextResponse.json({ error: "Board not found." }, { status: 404 });
   return NextResponse.json({ board });
 }
@@ -51,7 +51,7 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
 
   const { id } = await params;
   // Transactions survive — they belong to LOOP; only the tag goes away.
-  const ok = deleteBoard(session.id, id);
+  const ok = await deleteBoard(session.id, id);
   if (!ok) return NextResponse.json({ error: "Board not found." }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

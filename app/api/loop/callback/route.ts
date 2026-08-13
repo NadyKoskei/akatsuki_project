@@ -61,17 +61,17 @@ export async function GET(request: NextRequest) {
     const profile = demo ? DEMO_PROFILE : await fetchLoopProfile(tokens.accessToken);
 
     // 2. Create-or-update the Chroma user for that LOOP account.
-    const user = upsertUserFromLoop({
+    const user = await upsertUserFromLoop({
       loopAccountRef: profile.accountRef,
       name: profile.name,
       phoneNumber: profile.phoneNumber,
       userType: profile.userType,
     });
-    saveTokens(user.id, tokens);
+    await saveTokens(user.id, tokens);
 
     // 3. First-run: give them Boards, then pull their history.
-    const isFirstRun = listTransactions(user.id).length === 0;
-    seedStarterBoards(user.id, user.userType);
+    const isFirstRun = (await listTransactions(user.id)).length === 0;
+    await seedStarterBoards(user.id, user.userType);
 
     try {
       await syncFromLoop({
@@ -79,7 +79,7 @@ export async function GET(request: NextRequest) {
         accountRef: profile.accountRef,
         accessToken: tokens.accessToken,
       });
-      if (isFirstRun) autoFileDemoTransactions(user.id);
+      if (isFirstRun) await autoFileDemoTransactions(user.id);
     } catch {
       // Sign-in must not fail because the sandbox is slow; the dashboard
       // offers a manual sync and will retry.

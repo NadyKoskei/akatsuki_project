@@ -28,6 +28,6 @@ export async function POST() {
   const txn = normaliseTransaction(raw, session.id);
   if (!txn) return NextResponse.json({ error: "Could not build the demo transaction." }, { status: 500 });
 
-  upsertTransactions([{ ...txn, live: true }]);
+  await upsertTransactions([{ ...txn, live: true }]);
   return NextResponse.json({ transaction: { ...txn, live: true } });
 }

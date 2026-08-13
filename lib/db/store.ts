@@ -1,293 +1,69 @@
 import "server-only";
-import fs from "node:fs";
-import path from "node:path";
-import crypto from "node:crypto";
-import { encryptJson, decryptJson } from "./crypto";
-import type { Board, Insight, LoopTokenSet, Transaction, User, UserType } from "@/lib/types";
+import type { ChromaStore } from "./backend";
+import { memoryStore } from "./memory-store";
+import { postgresStore } from "./postgres-store";
 
 /**
- * File-backed store.
+ * Storage entry point. Every part of the app imports from here and stays
+ * ignorant of which backend is live.
  *
- * Deliberately small: one JSON document under ./.data, held in memory and
- * flushed on write. It carries the hackathon build without a database server,
- * and every call site goes through the functions below — so swapping in
- * Postgres means reimplementing this module's exports, nothing else.
+ *   DATABASE_URL set    -> Postgres / Supabase   (use this for anything deployed)
+ *   DATABASE_URL unset  -> file-backed store     (fine for `npm run dev`)
  *
- * Token sets are encrypted at rest; the rest is sandbox transaction data.
+ * The choice is made once per process, at first use.
  */
 
-interface StoreShape {
-  version: 1;
-  users: Record<string, User>;
-  /** userId -> encrypted LoopTokenSet */
-  tokens: Record<string, string>;
-  boards: Record<string, Board>;
-  transactions: Record<string, Transaction>;
-  insights: Record<string, Insight>;
-  /** userId -> ISO timestamp of the last successful LOOP pull */
-  lastSync: Record<string, string>;
+function usePostgres(): boolean {
+  const url = process.env.DATABASE_URL?.trim();
+  return Boolean(url && !/^your_/i.test(url));
 }
 
-const DATA_DIR = path.join(process.cwd(), ".data");
-const DATA_FILE = path.join(DATA_DIR, "chroma.json");
+let selected: ChromaStore | null = null;
 
-function empty(): StoreShape {
-  return { version: 1, users: {}, tokens: {}, boards: {}, transactions: {}, insights: {}, lastSync: {} };
+function backend(): ChromaStore {
+  if (!selected) selected = usePostgres() ? postgresStore : memoryStore;
+  return selected;
 }
 
-// Survive dev-server hot reloads, which re-evaluate modules.
-const globalRef = globalThis as unknown as { __chromaStore?: StoreShape };
-
-function load(): StoreShape {
-  if (globalRef.__chromaStore) return globalRef.__chromaStore;
-
-  let data = empty();
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, "utf8")) as Partial<StoreShape>;
-      data = { ...empty(), ...parsed, version: 1 };
-    }
-  } catch {
-    // Corrupt file: start clean rather than crash the app. Sandbox data only.
-    data = empty();
-  }
-
-  globalRef.__chromaStore = data;
-  return data;
+/** Which backend is live — surfaced in the dashboard footer, and handy in logs. */
+export function storeName(): ChromaStore["name"] {
+  return backend().name;
 }
-
-let flushTimer: NodeJS.Timeout | null = null;
-
-function flush(): void {
-  const data = load();
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    const tmp = `${DATA_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-    fs.renameSync(tmp, DATA_FILE);
-  } catch {
-    // Read-only filesystem (some hosts): keep serving from memory.
-  }
-}
-
-/** Coalesce bursts of writes into one disk hit. */
-function persist(): void {
-  if (flushTimer) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    flush();
-  }, 60);
-  // Don't hold the process open for a pending flush.
-  flushTimer.unref?.();
-}
-
-const id = (prefix: string) => `${prefix}_${crypto.randomBytes(9).toString("base64url")}`;
 
 /* ── Users ──────────────────────────────────────────────────────────────── */
 
-export function findUserByLoopRef(loopAccountRef: string): User | undefined {
-  return Object.values(load().users).find((u) => u.loopAccountRef === loopAccountRef);
-}
+export const findUserByLoopRef: ChromaStore["findUserByLoopRef"] = (ref) => backend().findUserByLoopRef(ref);
+export const getUser: ChromaStore["getUser"] = (userId) => backend().getUser(userId);
 
-export function getUser(userId: string): User | undefined {
-  return load().users[userId];
-}
+/** The only way a Chroma user comes into existence — called from the LOOP callback. */
+export const upsertUserFromLoop: ChromaStore["upsertUserFromLoop"] = (profile) => backend().upsertUserFromLoop(profile);
 
-/**
- * The only way a User row comes into existence. Called from the LOOP callback
- * after a verified authorisation — there is no other creation path.
- */
-export function upsertUserFromLoop(profile: {
-  loopAccountRef: string;
-  name: string;
-  phoneNumber: string;
-  userType: UserType;
-}): User {
-  const db = load();
-  const existing = findUserByLoopRef(profile.loopAccountRef);
+/* ── LOOP tokens (encrypted before they reach either backend) ───────────── */
 
-  if (existing) {
-    existing.name = profile.name || existing.name;
-    existing.phoneNumber = profile.phoneNumber || existing.phoneNumber;
-    existing.userType = profile.userType;
-    persist();
-    return existing;
-  }
-
-  const user: User = {
-    id: id("usr"),
-    name: profile.name,
-    phoneNumber: profile.phoneNumber,
-    userType: profile.userType,
-    loopAccountRef: profile.loopAccountRef,
-    createdAt: new Date().toISOString(),
-  };
-  db.users[user.id] = user;
-  persist();
-  return user;
-}
-
-/* ── LOOP tokens (encrypted at rest) ────────────────────────────────────── */
-
-export function saveTokens(userId: string, tokens: LoopTokenSet): void {
-  load().tokens[userId] = encryptJson(tokens);
-  persist();
-}
-
-export function getTokens(userId: string): LoopTokenSet | null {
-  const raw = load().tokens[userId];
-  return raw ? decryptJson<LoopTokenSet>(raw) : null;
-}
-
-export function clearTokens(userId: string): void {
-  delete load().tokens[userId];
-  persist();
-}
+export const saveTokens: ChromaStore["saveTokens"] = (userId, tokens) => backend().saveTokens(userId, tokens);
+export const getTokens: ChromaStore["getTokens"] = (userId) => backend().getTokens(userId);
+export const clearTokens: ChromaStore["clearTokens"] = (userId) => backend().clearTokens(userId);
 
 /* ── Boards ─────────────────────────────────────────────────────────────── */
 
-export function listBoards(userId: string): Board[] {
-  return Object.values(load().boards)
-    .filter((b) => b.userId === userId)
-    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-}
-
-export function getBoard(userId: string, boardId: string): Board | undefined {
-  const board = load().boards[boardId];
-  return board && board.userId === userId ? board : undefined;
-}
-
-export function createBoard(input: {
-  userId: string;
-  name: string;
-  colorCode: string;
-  budgetAmount: number | null;
-}): Board {
-  const board: Board = {
-    id: id("brd"),
-    userId: input.userId,
-    name: input.name,
-    colorCode: input.colorCode,
-    budgetAmount: input.budgetAmount,
-    createdAt: new Date().toISOString(),
-  };
-  load().boards[board.id] = board;
-  persist();
-  return board;
-}
-
-export function updateBoard(
-  userId: string,
-  boardId: string,
-  patch: Partial<Pick<Board, "name" | "colorCode" | "budgetAmount">>,
-): Board | undefined {
-  const board = getBoard(userId, boardId);
-  if (!board) return undefined;
-  Object.assign(board, patch);
-  persist();
-  return board;
-}
-
-/** Deleting a Board untags its transactions rather than deleting LOOP data. */
-export function deleteBoard(userId: string, boardId: string): boolean {
-  const db = load();
-  const board = getBoard(userId, boardId);
-  if (!board) return false;
-
-  for (const txn of Object.values(db.transactions)) {
-    if (txn.boardId === boardId) txn.boardId = null;
-  }
-  for (const [key, insight] of Object.entries(db.insights)) {
-    if (insight.boardId === boardId) delete db.insights[key];
-  }
-  delete db.boards[boardId];
-  persist();
-  return true;
-}
+export const listBoards: ChromaStore["listBoards"] = (userId) => backend().listBoards(userId);
+export const getBoard: ChromaStore["getBoard"] = (userId, boardId) => backend().getBoard(userId, boardId);
+export const createBoard: ChromaStore["createBoard"] = (input) => backend().createBoard(input);
+export const updateBoard: ChromaStore["updateBoard"] = (userId, boardId, patch) =>
+  backend().updateBoard(userId, boardId, patch);
+export const deleteBoard: ChromaStore["deleteBoard"] = (userId, boardId) => backend().deleteBoard(userId, boardId);
 
 /* ── Transactions ───────────────────────────────────────────────────────── */
 
-export function listTransactions(userId: string): Transaction[] {
-  return Object.values(load().transactions)
-    .filter((t) => t.userId === userId)
-    .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-}
-
-/**
- * Upserts pulled transactions, keyed by LOOP's transaction id, so re-syncing
- * never duplicates and never clobbers a Board tag the user already applied.
- */
-export function upsertTransactions(incoming: Transaction[]): { inserted: number; updated: number } {
-  const db = load();
-  let inserted = 0;
-  let updated = 0;
-
-  for (const txn of incoming) {
-    const existing = db.transactions[txn.id];
-    if (existing) {
-      db.transactions[txn.id] = { ...txn, boardId: existing.boardId, live: existing.live };
-      updated++;
-    } else {
-      db.transactions[txn.id] = txn;
-      inserted++;
-    }
-  }
-
-  if (inserted || updated) persist();
-  return { inserted, updated };
-}
-
-export function tagTransaction(userId: string, transactionId: string, boardId: string | null): Transaction | undefined {
-  const db = load();
-  const txn = db.transactions[transactionId];
-  if (!txn || txn.userId !== userId) return undefined;
-  if (boardId && !getBoard(userId, boardId)) return undefined;
-
-  txn.boardId = boardId;
-  txn.live = false; // tagged, so it leaves the "needs attention" queue
-  persist();
-  return txn;
-}
-
-export function getLastSync(userId: string): string | null {
-  return load().lastSync[userId] ?? null;
-}
-
-export function setLastSync(userId: string, at: string): void {
-  load().lastSync[userId] = at;
-  persist();
-}
+export const listTransactions: ChromaStore["listTransactions"] = (userId) => backend().listTransactions(userId);
+export const upsertTransactions: ChromaStore["upsertTransactions"] = (incoming) => backend().upsertTransactions(incoming);
+export const tagTransaction: ChromaStore["tagTransaction"] = (userId, txnId, boardId) =>
+  backend().tagTransaction(userId, txnId, boardId);
+export const getLastSync: ChromaStore["getLastSync"] = (userId) => backend().getLastSync(userId);
+export const setLastSync: ChromaStore["setLastSync"] = (userId, at) => backend().setLastSync(userId, at);
 
 /* ── Insights ───────────────────────────────────────────────────────────── */
 
-export function listInsights(userId: string): Insight[] {
-  return Object.values(load().insights)
-    .filter((i) => i.userId === userId)
-    .sort((a, b) => Date.parse(b.generatedAt) - Date.parse(a.generatedAt));
-}
-
-export function replaceInsights(userId: string, insights: Omit<Insight, "id">[]): Insight[] {
-  const db = load();
-  for (const [key, insight] of Object.entries(db.insights)) {
-    if (insight.userId === userId) delete db.insights[key];
-  }
-
-  const saved = insights.map((i) => {
-    const withId: Insight = { ...i, id: id("ins") };
-    db.insights[withId.id] = withId;
-    return withId;
-  });
-
-  persist();
-  return saved;
-}
-
-/** Wipes a user's Chroma-side data. LOOP is untouched. */
-export function resetUserData(userId: string): void {
-  const db = load();
-  for (const [key, t] of Object.entries(db.transactions)) if (t.userId === userId) delete db.transactions[key];
-  for (const [key, b] of Object.entries(db.boards)) if (b.userId === userId) delete db.boards[key];
-  for (const [key, i] of Object.entries(db.insights)) if (i.userId === userId) delete db.insights[key];
-  delete db.lastSync[userId];
-  persist();
-}
+export const listInsights: ChromaStore["listInsights"] = (userId) => backend().listInsights(userId);
+export const replaceInsights: ChromaStore["replaceInsights"] = (userId, insights) =>
+  backend().replaceInsights(userId, insights);

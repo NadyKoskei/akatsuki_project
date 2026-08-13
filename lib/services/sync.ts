@@ -39,9 +39,9 @@ export async function syncFromLoop(opts: {
     .map((r) => normaliseTransaction(r, opts.userId))
     .filter((t): t is Transaction => t !== null);
 
-  const { inserted, updated } = upsertTransactions(normalised);
+  const { inserted, updated } = await upsertTransactions(normalised);
   const syncedAt = new Date().toISOString();
-  setLastSync(opts.userId, syncedAt);
+  await setLastSync(opts.userId, syncedAt);
 
   return { inserted, updated, total: normalised.length, syncedAt };
 }
@@ -68,17 +68,22 @@ const STARTERS: Record<UserType, { name: string; budget: number | null }[]> = {
   ],
 };
 
-export function seedStarterBoards(userId: string, userType: UserType): Board[] {
-  if (listBoards(userId).length > 0) return listBoards(userId);
+export async function seedStarterBoards(userId: string, userType: UserType): Promise<Board[]> {
+  const existing = await listBoards(userId);
+  if (existing.length > 0) return existing;
 
-  return STARTERS[userType].map((s, i) =>
-    createBoard({
-      userId,
-      name: s.name,
-      colorCode: BOARD_COLORS[i % BOARD_COLORS.length].key,
-      budgetAmount: s.budget,
-    }),
-  );
+  const created: Board[] = [];
+  for (const [i, starter] of STARTERS[userType].entries()) {
+    created.push(
+      await createBoard({
+        userId,
+        name: starter.name,
+        colorCode: BOARD_COLORS[i % BOARD_COLORS.length].key,
+        budgetAmount: starter.budget,
+      }),
+    );
+  }
+  return created;
 }
 
 /**
@@ -100,10 +105,10 @@ const DEMO_FILING: Record<string, string[]> = {
   "Study Materials": ["Elimu Bookshop"],
 };
 
-export function autoFileDemoTransactions(userId: string, leaveUntagged = 6): number {
+export async function autoFileDemoTransactions(userId: string, leaveUntagged = 6): Promise<number> {
   if (!isDemoMode()) return 0;
 
-  const boards = listBoards(userId);
+  const boards = await listBoards(userId);
   const byCounterparty = new Map<string, string>();
   for (const board of boards) {
     for (const counterparty of DEMO_FILING[board.name] ?? []) {
@@ -112,16 +117,16 @@ export function autoFileDemoTransactions(userId: string, leaveUntagged = 6): num
   }
 
   // Newest first — skip the freshest few so the tagging queue isn't empty.
-  const transactions = listTransactions(userId);
+  const transactions = await listTransactions(userId);
   let filed = 0;
 
-  transactions.slice(leaveUntagged).forEach((txn) => {
-    if (txn.boardId) return;
+  for (const txn of transactions.slice(leaveUntagged)) {
+    if (txn.boardId) continue;
     const boardId = byCounterparty.get(txn.counterparty);
-    if (!boardId) return;
-    tagTransaction(userId, txn.id, boardId);
+    if (!boardId) continue;
+    await tagTransaction(userId, txn.id, boardId);
     filed++;
-  });
+  }
 
   return filed;
 }

@@ -29,7 +29,7 @@ export async function getSession(): Promise<SessionUser | null> {
   const session = await verifySession(jar.get(SESSION_COOKIE)?.value);
   if (!session) return null;
   // A signed session for a user we no longer hold is not a session.
-  return getUser(session.id) ? session : null;
+  return (await getUser(session.id)) ? session : null;
 }
 
 export class UnauthorizedError extends Error {
@@ -51,7 +51,7 @@ export async function requireSession(): Promise<SessionUser> {
  * modules branch on demo mode before ever putting it on the wire.
  */
 export async function getLoopAccessToken(userId: string): Promise<string> {
-  const tokens = getTokens(userId);
+  const tokens = await getTokens(userId);
 
   if (!tokens) {
     if (isDemoMode()) return "demo-session-token";
@@ -66,6 +66,6 @@ export async function getLoopAccessToken(userId: string): Promise<string> {
   }
 
   const refreshed: LoopTokenSet = await refreshTokens(tokens.refreshToken);
-  saveTokens(userId, refreshed);
+  await saveTokens(userId, refreshed);
   return refreshed.accessToken;
 }
