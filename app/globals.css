@@ -1,0 +1,351 @@
+@import "tailwindcss";
+
+/*
+ * Chroma design tokens.
+ *
+ * The categorical series slots are the validated data-viz palette (fixed hue
+ * order, never cycled). Both modes were run through the palette validator:
+ *   light (surface #fcfcfb): all checks PASS, contrast WARN on aqua/yellow/
+ *     magenta -> relief rule applies, so every chart ships direct labels and a
+ *     table view.
+ *   dark  (surface #141416): all checks PASS including 3:1 contrast.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces & chrome */
+  --plane: #f9f9f7;
+  --surface-1: #fcfcfb;
+  --surface-2: #ffffff;
+  --surface-sunken: #f2f2ee;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  --border-strong: rgba(11, 11, 11, 0.16);
+  --shadow-soft: 0 1px 2px rgba(11, 11, 11, 0.04), 0 8px 24px -12px rgba(11, 11, 11, 0.12);
+  --shadow-lift: 0 2px 4px rgba(11, 11, 11, 0.05), 0 18px 40px -16px rgba(11, 11, 11, 0.2);
+
+  /* categorical slots — identity, assigned in fixed order */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+  --series-other: #898781;
+
+  /* sequential (blue ramp) — magnitude only */
+  --seq-100: #cde2fb;
+  --seq-250: #86b6ef;
+  --seq-450: #2a78d6;
+  --seq-600: #184f95;
+
+  /* status — reserved, never used as a series */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --delta-good: #006300;
+
+  --aurora-a: rgba(42, 120, 214, 0.16);
+  --aurora-b: rgba(232, 123, 164, 0.14);
+  --aurora-c: rgba(27, 175, 122, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --plane: #0d0d0d;
+    --surface-1: #141416;
+    --surface-2: #1a1a1c;
+    --surface-sunken: #101012;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+    --shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.5), 0 18px 40px -16px rgba(0, 0, 0, 0.8);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+
+    --seq-100: #184f95;
+    --seq-250: #256abf;
+    --seq-450: #3987e5;
+    --seq-600: #86b6ef;
+
+    --delta-good: #0ca30c;
+
+    --aurora-a: rgba(57, 135, 229, 0.2);
+    --aurora-b: rgba(213, 81, 129, 0.16);
+    --aurora-c: rgba(25, 158, 112, 0.14);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --plane: #0d0d0d;
+  --surface-1: #141416;
+  --surface-2: #1a1a1c;
+  --surface-sunken: #101012;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+  --shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.5), 0 18px 40px -16px rgba(0, 0, 0, 0.8);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --seq-100: #184f95;
+  --seq-250: #256abf;
+  --seq-450: #3987e5;
+  --seq-600: #86b6ef;
+
+  --delta-good: #0ca30c;
+
+  --aurora-a: rgba(57, 135, 229, 0.2);
+  --aurora-b: rgba(213, 81, 129, 0.16);
+  --aurora-c: rgba(25, 158, 112, 0.14);
+}
+
+@theme inline {
+  --color-plane: var(--plane);
+  --color-surface: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-sunken: var(--surface-sunken);
+  --color-ink: var(--text-primary);
+  --color-ink-2: var(--text-secondary);
+  --color-ink-muted: var(--text-muted);
+  --color-gridline: var(--gridline);
+  --color-baseline: var(--baseline);
+  --color-hairline: var(--border);
+  --color-good: var(--status-good);
+  --color-warning: var(--status-warning);
+  --color-serious: var(--status-serious);
+  --color-critical: var(--status-critical);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--plane);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+/* ── The fancy layer: an aurora wash behind the page plane ─────────────── */
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.aurora::before,
+.aurora::after {
+  content: "";
+  position: absolute;
+  width: 60vw;
+  height: 60vw;
+  border-radius: 9999px;
+  filter: blur(90px);
+}
+
+.aurora::before {
+  top: -22vw;
+  left: -10vw;
+  background: radial-gradient(circle at 30% 30%, var(--aurora-a), transparent 70%);
+  animation: drift-a 26s ease-in-out infinite alternate;
+}
+
+.aurora::after {
+  top: -14vw;
+  right: -16vw;
+  background: radial-gradient(circle at 70% 30%, var(--aurora-b), transparent 70%);
+  animation: drift-b 32s ease-in-out infinite alternate;
+}
+
+.aurora > span {
+  position: absolute;
+  bottom: -30vw;
+  left: 30vw;
+  width: 50vw;
+  height: 50vw;
+  border-radius: 9999px;
+  filter: blur(100px);
+  background: radial-gradient(circle at 50% 50%, var(--aurora-c), transparent 70%);
+  animation: drift-c 38s ease-in-out infinite alternate;
+}
+
+@keyframes drift-a {
+  to {
+    transform: translate3d(6vw, 4vw, 0) scale(1.12);
+  }
+}
+@keyframes drift-b {
+  to {
+    transform: translate3d(-7vw, 5vw, 0) scale(1.08);
+  }
+}
+@keyframes drift-c {
+  to {
+    transform: translate3d(4vw, -6vw, 0) scale(1.1);
+  }
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+.card {
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  backdrop-filter: blur(12px) saturate(1.1);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow-soft);
+}
+
+.card-interactive {
+  transition:
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 200ms ease;
+}
+
+.card-interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lift);
+  border-color: var(--border-strong);
+}
+
+/* Focus ring — one definition, everywhere */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.hairline {
+  border-color: var(--border);
+}
+
+/* ── Chart primitives ──────────────────────────────────────────────────── */
+.grid-line {
+  stroke: var(--gridline);
+  stroke-width: 1;
+}
+
+.axis-line {
+  stroke: var(--baseline);
+  stroke-width: 1;
+}
+
+.axis-text {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Motion ────────────────────────────────────────────────────────────── */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise {
+  animation: rise 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes sheen {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.sheen {
+  background: linear-gradient(
+    100deg,
+    var(--text-primary) 20%,
+    color-mix(in srgb, var(--series-1) 70%, var(--text-primary)) 40%,
+    var(--text-primary) 60%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: sheen 6s linear infinite;
+}
+
+/* Refetch holds the previous render — no skeleton flash, no layout jump */
+.is-refetching {
+  opacity: 0.55;
+  transition: opacity 160ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+::selection {
+  background: color-mix(in srgb, var(--series-1) 26%, transparent);
+}
+
+/* Scrollbars, quietly */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--baseline) transparent;
+}

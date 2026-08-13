@@ -129,9 +129,9 @@ Chroma is a **read + organize layer** on top of LOOP for the MVP — it does not
 
 | Layer | Choice |
 |---|---|
-| Frontend | Next.js / React |
-| Backend | Node.js (Express) |
-| Database | PostgreSQL (Supabase) |
+| Frontend | Next.js 15 (App Router) / React 19 / Tailwind CSS 4 |
+| Backend | Next.js route handlers (Node runtime) |
+| Database | File-backed store for the hackathon build; PostgreSQL (Supabase) behind the same interface |
 | Auth | LOOP sandbox OAuth (token-based) |
 | AI Insights | LLM API (pattern summarization over tagged transaction data) |
 | Payments | LOOP Sandbox APIs (Transaction, IPN, Request to Pay, Checkout) |
@@ -148,11 +148,31 @@ npm install
 
 # set up environment variables
 cp .env.example .env
+# generate a session secret and paste it into JWT_SECRET:
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 # then fill in your own LOOP sandbox credentials — see below
 
 # run
-npm run dev
+npm run dev            # http://localhost:3000
 ```
+
+**It runs before you have LOOP credentials.** With `LOOP_CLIENT_ID` / `LOOP_API_SECRET` unset (or left as the `your_…` placeholders), Chroma starts in **seeded sandbox mode**: "Continue with LOOP" runs the same PKCE + state handshake and lands on the same callback, but the token exchange and transaction pull come from a seeded dataset instead of the live sandbox. Sign-in is still the only way in, and the demo survives a rate-limited sandbox on presentation day.
+
+Fill in real sandbox credentials and the identical code path talks to LOOP. Set `LOOP_DEMO_MODE=false` to refuse to start without them.
+
+### Sign-in flow
+
+```
+/                          "Continue with LOOP" — the only auth control in the app
+  → /api/auth/loop/start   builds the authorize URL (PKCE S256 + CSRF state cookie)
+  → LOOP authorize screen  (skipped in seeded sandbox mode)
+  → /api/loop/callback     verifies state, exchanges the code, reads the account,
+                           creates-or-updates the user, encrypts the token set,
+                           seeds starter Boards, pulls history, mints the session
+  → /dashboard             gated by middleware; no session, no page
+```
+
+There is no email, password, invite, or admin path — `upsertUserFromLoop()` is called from the callback and nowhere else, so a Chroma user cannot exist without a LOOP authorisation.
 
 ## Environment Variables
 
@@ -166,17 +186,22 @@ LOOP_API_KEY=your_loop_sandbox_api_key
 LOOP_API_SECRET=your_loop_sandbox_api_secret
 LOOP_IPN_CALLBACK_URL=https://your-deployed-url.com/api/loop/ipn
 LOOP_REDIRECT_URI=https://your-deployed-url.com/api/loop/callback
+LOOP_DEMO_MODE=auto              # auto | true | false
 
-# Database
-DATABASE_URL=your_postgres_connection_string
+# Database (optional — unset uses the local file-backed store)
+DATABASE_URL=
 
-# AI Insights
+# AI Insights (optional — unset uses the deterministic rules engine)
 AI_API_KEY=your_llm_api_key
+AI_MODEL=claude-opus-5
 
 # App
 NEXT_PUBLIC_APP_NAME=Chroma
+APP_BASE_URL=http://localhost:3000
 JWT_SECRET=generate_a_random_secret
 ```
+
+Two guards worth knowing about: `assertSandbox()` refuses to start sign-in against a host that doesn't look like a sandbox, and the `your_…` placeholders from `.env.example` are treated as unset rather than sent to LOOP as junk credentials.
 
 > `.env` is git-ignored by default. Keep sandbox credentials out of commits, screenshots, and this README — see [Hackathon Compliance Notes](#hackathon-compliance-notes).
 
@@ -184,31 +209,57 @@ JWT_SECRET=generate_a_random_secret
 
 ```
 chroma/
-├── app/                    # Next.js app router pages
-│   ├── dashboard/
-│   ├── boards/
-│   └── onboarding/
-├── components/             # UI components (Board cards, palette, charts)
+├── app/
+│   ├── page.tsx                       # Landing — "Continue with LOOP", nothing else
+│   ├── dashboard/page.tsx             # The dashboard (server component)
+│   └── api/
+│       ├── auth/loop/start/           # Begins the OAuth handshake (PKCE + state)
+│       ├── auth/logout/               # Drops the session and the stored tokens
+│       ├── loop/callback/             # The only place a user is created
+│       ├── loop/sync/                 # Manual history pull
+│       ├── loop/ipn/                  # IPN webhook (HMAC-verified)
+│       ├── loop/ipn/demo/             # Session-gated simulated IPN, demo mode only
+│       ├── boards/[id]/               # Board CRUD
+│       ├── transactions/[id]/tag/     # "Which Board is this for?"
+│       └── insights/                  # Regenerate insights
+├── components/
+│   ├── charts/                        # Spend trend, spend-by-Board (+ table twins)
+│   └── dashboard/                     # Stat tiles, filter row, Boards, feed, insights
 ├── lib/
-│   ├── loop/                # LOOP API client, auth, IPN handler
-│   ├── ai/                  # Insights engine
-│   └── db/                  # DB client + queries
-├── server/
-│   └── routes/               # API routes (boards, transactions, insights)
-├── .env.example
-└── README.md
+│   ├── loop/                          # config, HTTP client, OAuth, transactions, IPN,
+│   │                                  #   Request to Pay / Checkout, seeded dataset
+│   ├── auth/                          # JWT session (edge-safe) + cookie helpers
+│   ├── db/                            # File-backed store + token encryption
+│   ├── services/                      # analytics, sync, suggestions, insights engine
+│   └── palette.ts                     # The validated Board palette
+├── middleware.ts                      # Gates /dashboard on a valid session
+└── .env.example
 ```
+
+## Design notes
+
+**The Board palette is validated, not eyeballed.** Boards pick from eight fixed categorical slots, stored as a slot key rather than a hex so every mark re-steps itself for dark mode. Both modes pass the colour-blindness, lightness, chroma and contrast checks on the surfaces the app actually renders on; three light-mode slots sit below 3:1, so every chart ships direct labels and a table view rather than relying on hue. Colour follows the Board, never its rank — changing the date range re-orders the bars but never repaints them, and a ninth Board folds into a grey "Other" instead of inventing a colour.
+
+**Money is minor units everywhere.** Amounts are integers (cents) end to end; formatting is the only place they become decimal.
+
+**Insights can't invent numbers.** The rules engine computes every figure from the LOOP data; the model is handed those pre-formatted figures and asked only to write the sentence, with a JSON schema constraining the shape. No key, a refusal, or a network failure all fall back to the rules output, so the panel is never blank.
+
+**Storage.** Out of the box, state lives in a file-backed store under `.data/` (git-ignored) — enough for the hackathon build, and swappable by reimplementing `lib/db/store.ts` against Postgres. LOOP token sets are encrypted at rest with AES-256-GCM under a key derived from `JWT_SECRET`; rotating the secret simply forces re-authorisation through LOOP.
 
 ## MVP Scope (Hackathon Build)
 
 Given the hackathon timeframe, the build prioritizes:
 
-- LOOP sandbox integration pulling a demo user's real transaction history
-- Board creation (name + color)
-- Tagging pulled transactions to Boards
-- Board dashboard (total, list, budget bar)
-- One AI insight (weekly summary over tagged data)
-- A seeded **fallback demo mode** in case the sandbox is rate-limited or unavailable during presentation
+- [x] LOOP sandbox integration pulling a user's transaction history (`/api/loop/sync`, paginated, re-sync never duplicates or clobbers a tag)
+- [x] LOOP account as the sole access gateway — OAuth + PKCE, middleware-gated dashboard, no other sign-up path
+- [x] Board creation (name + colour + optional budget), editable and deletable
+- [x] Tagging pulled transactions to Boards, with a suggested Board based on what you filed that counterparty as last time
+- [x] Board dashboard — hero total, stat tiles, spend trend, spend-by-Board, per-Board budget meters
+- [x] AI insights over the tagged data, with a deterministic rules engine underneath it
+- [x] A seeded **fallback demo mode** in case the sandbox is rate-limited or unavailable during presentation, plus a "Simulate payment" button that exercises the live-tagging prompt
+- [x] IPN intake with HMAC signature verification
+- [~] Request to Pay / Checkout — the client layer is written (`lib/loop/payments.ts`) but has no UI yet
+- [ ] OCR receipt capture for non-LOOP cash expenses (stretch, not started)
 
 ## Hackathon Compliance Notes
 
