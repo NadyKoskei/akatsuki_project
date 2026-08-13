@@ -66,6 +66,31 @@ create table if not exists chroma_insights (
 
 create index if not exists chroma_insights_user_idx on chroma_insights (user_id, generated_at desc);
 
+-- Recurring commitments: bills, savings, investments.
+create table if not exists chroma_standing_orders (
+  id           text primary key,
+  user_id      text not null references chroma_users(id) on delete cascade,
+  name         text not null,
+  kind         text not null default 'bill',
+  amount       bigint not null,
+  currency     text not null default 'KES',
+  frequency    text not null default 'monthly',
+  destination  text not null,
+  reference    text,
+  -- Keep the order if its Board goes away; it just becomes unfiled.
+  board_id     text references chroma_boards(id) on delete set null,
+  status       text not null default 'active',
+  next_run_at  timestamptz not null,
+  last_run_at  timestamptz,
+  created_at   timestamptz not null default now()
+);
+
+-- The runner's query: active orders that are due, oldest first.
+create index if not exists chroma_standing_orders_due_idx
+  on chroma_standing_orders (status, next_run_at);
+create index if not exists chroma_standing_orders_user_idx
+  on chroma_standing_orders (user_id, created_at);
+
 create table if not exists chroma_sync_state (
   user_id    text primary key references chroma_users(id) on delete cascade,
   last_sync  timestamptz not null
@@ -75,9 +100,10 @@ create table if not exists chroma_sync_state (
 -- bypasses RLS. Enabling RLS with no policies therefore changes nothing for
 -- the app, while slamming the door on Supabase's public anon REST API — which
 -- would otherwise expose every table to anyone holding the publishable key.
-alter table chroma_users        enable row level security;
-alter table chroma_loop_tokens  enable row level security;
-alter table chroma_boards       enable row level security;
-alter table chroma_transactions enable row level security;
-alter table chroma_insights     enable row level security;
-alter table chroma_sync_state   enable row level security;
+alter table chroma_users            enable row level security;
+alter table chroma_loop_tokens      enable row level security;
+alter table chroma_boards           enable row level security;
+alter table chroma_transactions     enable row level security;
+alter table chroma_insights         enable row level security;
+alter table chroma_sync_state       enable row level security;
+alter table chroma_standing_orders  enable row level security;

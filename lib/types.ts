@@ -70,6 +70,40 @@ export interface Insight {
   origin: "ai" | "rules";
 }
 
+/** Bills, savings and investments are the three things people commit to on a cadence. */
+export type StandingOrderKind = "bill" | "savings" | "investment";
+export type StandingOrderFrequency = "weekly" | "monthly";
+export type StandingOrderStatus = "active" | "paused";
+
+export interface StandingOrder {
+  id: string;
+  userId: string;
+  name: string;
+  kind: StandingOrderKind;
+  /** Minor units, always positive. */
+  amount: number;
+  currency: string;
+  frequency: StandingOrderFrequency;
+  /** Where the money goes — a paybill, till, or account reference. */
+  destination: string;
+  reference: string | null;
+  /** The Board the resulting transaction is filed to, if the user picked one. */
+  boardId: string | null;
+  status: StandingOrderStatus;
+  /** ISO 8601. The runner picks up anything active and due. */
+  nextRunAt: string;
+  lastRunAt: string | null;
+  createdAt: string;
+}
+
+export interface StandingOrderRunResult {
+  orderId: string;
+  name: string;
+  status: "sent" | "skipped" | "failed";
+  detail: string;
+  transactionId?: string;
+}
+
 export interface BoardSummary {
   board: Board;
   spent: number;

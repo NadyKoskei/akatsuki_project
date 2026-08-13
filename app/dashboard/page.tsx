@@ -1,6 +1,14 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth/session";
-import { getLastSync, listBoards, listInsights, listTransactions, replaceInsights } from "@/lib/db/store";
+import {
+  getLastSync,
+  listBoards,
+  listInsights,
+  listStandingOrders,
+  listTransactions,
+  replaceInsights,
+} from "@/lib/db/store";
+import { monthlyCommitment } from "@/lib/services/standing-orders";
 import { isDemoMode } from "@/lib/loop/config";
 import { formatCompact, formatMoney } from "@/lib/format";
 import {
@@ -19,6 +27,7 @@ import { AccountBar } from "@/components/dashboard/AccountBar";
 import { BoardsGrid } from "@/components/dashboard/BoardsGrid";
 import { FilterBar } from "@/components/dashboard/FilterBar";
 import { InsightsPanel } from "@/components/dashboard/InsightsPanel";
+import { StandingOrders } from "@/components/dashboard/StandingOrders";
 import { StatTile } from "@/components/dashboard/StatTile";
 import { TransactionFeed } from "@/components/dashboard/TransactionFeed";
 import { BoardSpendChart } from "@/components/charts/BoardSpendChart";
@@ -43,7 +52,11 @@ export default async function DashboardPage({
   const range = parseRange((await searchParams).range);
   const days = rangeDays(range) ?? 90;
 
-  const [boards, all] = await Promise.all([listBoards(session.id), listTransactions(session.id)]);
+  const [boards, all, standingOrders] = await Promise.all([
+    listBoards(session.id),
+    listTransactions(session.id),
+    listStandingOrders(session.id),
+  ]);
   const scoped = withinRange(all, range);
 
   const summaries = summariseBoards(boards, scoped);
@@ -143,6 +156,15 @@ export default async function DashboardPage({
 
         <div className="mt-6">
           <BoardsGrid summaries={summaries} currency={currency} />
+        </div>
+
+        <div className="mt-6">
+          <StandingOrders
+            orders={standingOrders}
+            boards={boards}
+            currency={currency}
+            monthlyTotal={monthlyCommitment(standingOrders)}
+          />
         </div>
 
         <div className="mt-6 grid gap-3 lg:grid-cols-[1.4fr_1fr]">

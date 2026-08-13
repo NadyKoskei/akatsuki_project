@@ -53,6 +53,7 @@ No LOOP account, no access: authentication is entirely handled through LOOP's ow
 7. **AI insights** — plain-language pattern analysis ("Transport is up 40% this week," "Kilimani Site is trending 15% over budget").
 8. **Uncategorized alerts** — nothing pulled from LOOP goes untracked.
 9. **LOOP Request to Pay / Checkout** — small businesses can invoice customers or accept payments directly, with proceeds auto-logged to a Board.
+10. **Standing orders** — bills, savings and investments that repeat. Chroma holds the instruction, asks LOOP to pay when it falls due, and files the result to the Board you chose.
 
 ## Objectives
 
@@ -232,6 +233,7 @@ You can also paste `lib/db/schema.sql` straight into the Supabase SQL editor. Th
 | `APP_BASE_URL` | `https://your-app.vercel.app` |
 | `LOOP_REDIRECT_URI` | `https://your-app.vercel.app/api/loop/callback` |
 | `LOOP_IPN_CALLBACK_URL` | `https://your-app.vercel.app/api/loop/ipn` |
+| `CRON_SECRET` | required for standing orders to run; Vercel Cron sends it as a bearer token |
 | `AI_API_KEY` | optional; without it insights come from the rules engine |
 
 Or from the CLI:
@@ -266,6 +268,8 @@ chroma/
 │       ├── loop/ipn/demo/             # Session-gated simulated IPN, demo mode only
 │       ├── boards/[id]/               # Board CRUD
 │       ├── transactions/[id]/tag/     # "Which Board is this for?"
+│       ├── standing-orders/           # Bills, savings, investments (+ /[id]/run)
+│       ├── cron/standing-orders/      # Scheduled runner, CRON_SECRET-gated
 │       └── insights/                  # Regenerate insights
 ├── components/
 │   ├── charts/                        # Spend trend, spend-by-Board (+ table twins)
@@ -288,6 +292,10 @@ chroma/
 **Money is minor units everywhere.** Amounts are integers (cents) end to end; formatting is the only place they become decimal.
 
 **Insights can't invent numbers.** The rules engine computes every figure from the LOOP data; the model is handed those pre-formatted figures and asked only to write the sentence, with a JSON schema constraining the shape. No key, a refusal, or a network failure all fall back to the rules output, so the panel is never blank.
+
+**Standing orders are instructions, not held money.** An order records what to pay, where, how often, and which Board it belongs to. A scheduled run (`/api/cron/standing-orders`, daily at 06:00 via `vercel.json`) picks up everything active and due, asks LOOP to move the money, and files the resulting transaction to the Board — so rent or a weekly savings sweep never needs tagging. The endpoint has no session behind it, so `CRON_SECRET` is the entire door: with none configured it returns 503 and runs nothing rather than defaulting open. A failed run advances the schedule anyway, so one bad night can't fire the same payment repeatedly for the rest of the month. Monthly orders clamp to short months — the 31st becomes the 30th in April instead of skipping to May.
+
+> One caveat worth stating plainly: LOOP's outgoing-payment route is the single endpoint in this build that couldn't be verified against real sandbox docs. It's isolated in `initiateTransfer()` and its path is configurable via `LOOP_TRANSFER_PATH` — check it against your portal. In seeded-demo mode the debit is synthesised locally so the whole loop is demonstrable; against live LOOP, Chroma records only what LOOP actually returned an id for, so a payment is never shown twice.
 
 **Storage is one interface, two backends.** `lib/db/backend.ts` defines the contract; `lib/db/store.ts` picks the implementation at first use — Postgres when `DATABASE_URL` is set, the file-backed store under `.data/` otherwise. Nothing else in the codebase knows which is live, so local development needs no database and deployment needs no code change. LOOP token sets are encrypted with AES-256-GCM *before* they reach either backend, under a key derived from `JWT_SECRET`, so Postgres never stores a usable token; rotating the secret simply forces re-authorisation through LOOP.
 

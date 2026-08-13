@@ -67,3 +67,16 @@ export const setLastSync: ChromaStore["setLastSync"] = (userId, at) => backend()
 export const listInsights: ChromaStore["listInsights"] = (userId) => backend().listInsights(userId);
 export const replaceInsights: ChromaStore["replaceInsights"] = (userId, insights) =>
   backend().replaceInsights(userId, insights);
+
+/* ── Standing orders ────────────────────────────────────────────────────── */
+
+export const listStandingOrders: ChromaStore["listStandingOrders"] = (userId) => backend().listStandingOrders(userId);
+export const getStandingOrder: ChromaStore["getStandingOrder"] = (userId, orderId) =>
+  backend().getStandingOrder(userId, orderId);
+export const createStandingOrder: ChromaStore["createStandingOrder"] = (input) => backend().createStandingOrder(input);
+export const updateStandingOrder: ChromaStore["updateStandingOrder"] = (userId, orderId, patch) =>
+  backend().updateStandingOrder(userId, orderId, patch);
+export const deleteStandingOrder: ChromaStore["deleteStandingOrder"] = (userId, orderId) =>
+  backend().deleteStandingOrder(userId, orderId);
+export const listDueStandingOrders: ChromaStore["listDueStandingOrders"] = (nowIso, limit) =>
+  backend().listDueStandingOrders(nowIso, limit);

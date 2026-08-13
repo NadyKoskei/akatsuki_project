@@ -1,4 +1,4 @@
-import type { Board, Insight, LoopTokenSet, Transaction, User, UserType } from "@/lib/types";
+import type { Board, Insight, LoopTokenSet, StandingOrder, Transaction, User, UserType } from "@/lib/types";
 
 /**
  * The storage contract.
@@ -50,6 +50,18 @@ export interface ChromaStore {
 
   listInsights(userId: string): Promise<Insight[]>;
   replaceInsights(userId: string, insights: Omit<Insight, "id">[]): Promise<Insight[]>;
+
+  listStandingOrders(userId: string): Promise<StandingOrder[]>;
+  getStandingOrder(userId: string, orderId: string): Promise<StandingOrder | undefined>;
+  createStandingOrder(input: Omit<StandingOrder, "id" | "createdAt" | "lastRunAt">): Promise<StandingOrder>;
+  updateStandingOrder(
+    userId: string,
+    orderId: string,
+    patch: Partial<Omit<StandingOrder, "id" | "userId" | "createdAt">>,
+  ): Promise<StandingOrder | undefined>;
+  deleteStandingOrder(userId: string, orderId: string): Promise<boolean>;
+  /** Across every user — this is what the scheduled runner reads. */
+  listDueStandingOrders(nowIso: string, limit: number): Promise<StandingOrder[]>;
 }
 
 /** Ids are generated app-side so both backends produce the same shape. */

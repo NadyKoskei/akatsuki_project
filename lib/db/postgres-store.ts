@@ -8,6 +8,10 @@ import type {
   Insight,
   InsightType,
   LoopTokenSet,
+  StandingOrder,
+  StandingOrderFrequency,
+  StandingOrderKind,
+  StandingOrderStatus,
   Transaction,
   TransactionDirection,
   TransactionSource,
@@ -115,6 +119,25 @@ function toTransaction(row: Row): Transaction {
     reference: row.reference === null || row.reference === undefined ? undefined : String(row.reference),
     boardId: row.board_id === null || row.board_id === undefined ? null : String(row.board_id),
     live: Boolean(row.live),
+  };
+}
+
+function toStandingOrder(row: Row): StandingOrder {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    name: String(row.name),
+    kind: String(row.kind) as StandingOrderKind,
+    amount: num(row.amount),
+    currency: String(row.currency ?? "KES"),
+    frequency: String(row.frequency) as StandingOrderFrequency,
+    destination: String(row.destination),
+    reference: row.reference === null || row.reference === undefined ? null : String(row.reference),
+    boardId: row.board_id === null || row.board_id === undefined ? null : String(row.board_id),
+    status: String(row.status) as StandingOrderStatus,
+    nextRunAt: iso(row.next_run_at as Date),
+    lastRunAt: row.last_run_at ? iso(row.last_run_at as Date) : null,
+    createdAt: iso(row.created_at as Date),
   };
 }
 
@@ -392,6 +415,94 @@ export const postgresStore: ChromaStore = {
       });
 
       return saved as Insight[];
+    });
+  },
+
+  async listStandingOrders(userId: string): Promise<StandingOrder[]> {
+    const sql = client();
+    return guard(async () => {
+      const rows = await sql<Row[]>`
+        select * from chroma_standing_orders where user_id = ${userId} order by next_run_at asc`;
+      return rows.map(toStandingOrder);
+    });
+  },
+
+  async getStandingOrder(userId: string, orderId: string): Promise<StandingOrder | undefined> {
+    const sql = client();
+    return guard(async () => {
+      const rows = await sql<Row[]>`
+        select * from chroma_standing_orders where id = ${orderId} and user_id = ${userId} limit 1`;
+      return rows[0] ? toStandingOrder(rows[0]) : undefined;
+    });
+  },
+
+  async createStandingOrder(input: Omit<StandingOrder, "id" | "createdAt" | "lastRunAt">): Promise<StandingOrder> {
+    const sql = client();
+    return guard(async () => {
+      const rows = await sql<Row[]>`
+        insert into chroma_standing_orders
+          (id, user_id, name, kind, amount, currency, frequency, destination, reference, board_id, status, next_run_at)
+        values (
+          ${id("std")}, ${input.userId}, ${input.name}, ${input.kind}, ${input.amount}, ${input.currency},
+          ${input.frequency}, ${input.destination}, ${input.reference}, ${input.boardId}, ${input.status},
+          ${input.nextRunAt}
+        )
+        returning *`;
+      return toStandingOrder(rows[0]);
+    });
+  },
+
+  async updateStandingOrder(
+    userId: string,
+    orderId: string,
+    patch: Partial<Omit<StandingOrder, "id" | "userId" | "createdAt">>,
+  ): Promise<StandingOrder | undefined> {
+    const sql = client();
+
+    // Only the keys actually supplied are written, so a pause never rewrites
+    // the schedule and a reschedule never flips the status.
+    const columns: Record<string, unknown> = {};
+    if (patch.name !== undefined) columns.name = patch.name;
+    if (patch.kind !== undefined) columns.kind = patch.kind;
+    if (patch.amount !== undefined) columns.amount = patch.amount;
+    if (patch.currency !== undefined) columns.currency = patch.currency;
+    if (patch.frequency !== undefined) columns.frequency = patch.frequency;
+    if (patch.destination !== undefined) columns.destination = patch.destination;
+    if (patch.reference !== undefined) columns.reference = patch.reference;
+    if (patch.boardId !== undefined) columns.board_id = patch.boardId;
+    if (patch.status !== undefined) columns.status = patch.status;
+    if (patch.nextRunAt !== undefined) columns.next_run_at = patch.nextRunAt;
+    if (patch.lastRunAt !== undefined) columns.last_run_at = patch.lastRunAt;
+
+    if (Object.keys(columns).length === 0) return this.getStandingOrder(userId, orderId);
+
+    return guard(async () => {
+      const rows = await sql`
+        update chroma_standing_orders set ${sql(columns)}
+        where id = ${orderId} and user_id = ${userId}
+        returning *`;
+      return rows[0] ? toStandingOrder(rows[0] as Row) : undefined;
+    });
+  },
+
+  async deleteStandingOrder(userId: string, orderId: string): Promise<boolean> {
+    const sql = client();
+    return guard(async () => {
+      const rows = await sql<Row[]>`
+        delete from chroma_standing_orders where id = ${orderId} and user_id = ${userId} returning id`;
+      return rows.length > 0;
+    });
+  },
+
+  async listDueStandingOrders(nowIso: string, limit: number): Promise<StandingOrder[]> {
+    const sql = client();
+    return guard(async () => {
+      const rows = await sql<Row[]>`
+        select * from chroma_standing_orders
+        where status = 'active' and next_run_at <= ${nowIso}
+        order by next_run_at asc
+        limit ${limit}`;
+      return rows.map(toStandingOrder);
     });
   },
 };

@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { encryptJson, decryptJson } from "./crypto";
 import type { ChromaStore } from "./backend";
-import type { Board, Insight, LoopTokenSet, Transaction, User, UserType } from "@/lib/types";
+import type { Board, Insight, LoopTokenSet, StandingOrder, Transaction, User, UserType } from "@/lib/types";
 
 /**
  * File-backed store for local development.
@@ -25,13 +25,23 @@ interface StoreShape {
   transactions: Record<string, Transaction>;
   insights: Record<string, Insight>;
   lastSync: Record<string, string>;
+  standingOrders: Record<string, StandingOrder>;
 }
 
 const DATA_DIR = path.join(process.cwd(), ".data");
 const DATA_FILE = path.join(DATA_DIR, "chroma.json");
 
 function empty(): StoreShape {
-  return { version: 1, users: {}, tokens: {}, boards: {}, transactions: {}, insights: {}, lastSync: {} };
+  return {
+    version: 1,
+    users: {},
+    tokens: {},
+    boards: {},
+    transactions: {},
+    insights: {},
+    lastSync: {},
+    standingOrders: {},
+  };
 }
 
 // Survive dev-server hot reloads, which re-evaluate modules.
@@ -266,5 +276,57 @@ export const memoryStore: ChromaStore = {
 
     persist();
     return saved;
+  },
+
+  async listStandingOrders(userId: string): Promise<StandingOrder[]> {
+    return Object.values(load().standingOrders)
+      .filter((o) => o.userId === userId)
+      .sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt));
+  },
+
+  async getStandingOrder(userId: string, orderId: string): Promise<StandingOrder | undefined> {
+    const order = load().standingOrders[orderId];
+    return order && order.userId === userId ? order : undefined;
+  },
+
+  async createStandingOrder(input: Omit<StandingOrder, "id" | "createdAt" | "lastRunAt">): Promise<StandingOrder> {
+    const order: StandingOrder = {
+      ...input,
+      id: id("std"),
+      lastRunAt: null,
+      createdAt: new Date().toISOString(),
+    };
+    load().standingOrders[order.id] = order;
+    persist();
+    return order;
+  },
+
+  async updateStandingOrder(
+    userId: string,
+    orderId: string,
+    patch: Partial<Omit<StandingOrder, "id" | "userId" | "createdAt">>,
+  ): Promise<StandingOrder | undefined> {
+    const order = load().standingOrders[orderId];
+    if (!order || order.userId !== userId) return undefined;
+    Object.assign(order, patch);
+    persist();
+    return order;
+  },
+
+  async deleteStandingOrder(userId: string, orderId: string): Promise<boolean> {
+    const db = load();
+    const order = db.standingOrders[orderId];
+    if (!order || order.userId !== userId) return false;
+    delete db.standingOrders[orderId];
+    persist();
+    return true;
+  },
+
+  async listDueStandingOrders(nowIso: string, limit: number): Promise<StandingOrder[]> {
+    const now = Date.parse(nowIso);
+    return Object.values(load().standingOrders)
+      .filter((o) => o.status === "active" && Date.parse(o.nextRunAt) <= now)
+      .sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt))
+      .slice(0, limit);
   },
 };
