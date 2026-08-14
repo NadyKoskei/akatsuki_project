@@ -28,6 +28,24 @@ export class LoopApiError extends Error {
     return this.status === 401 || this.status === 403;
   }
 
+  /**
+   * The endpoint, the status, and whatever LOOP said about it — the sandbox's
+   * own message is far more useful for fixing a misconfiguration than ours.
+   */
+  get detail(): string {
+    const body = this.body.trim();
+    if (!body) return this.message;
+
+    try {
+      const parsed = JSON.parse(body) as { message?: string; description?: string; error_description?: string };
+      const said = parsed.description ?? parsed.error_description ?? parsed.message;
+      if (said) return `${this.message} — LOOP said: ${said}`;
+    } catch {
+      // Not JSON; fall through to the raw text.
+    }
+    return `${this.message} — LOOP said: ${body.slice(0, 160)}`;
+  }
+
   get isRateLimited(): boolean {
     return this.status === 429;
   }

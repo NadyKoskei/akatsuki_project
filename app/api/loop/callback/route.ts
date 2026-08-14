@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { exchangeCodeForTokens, fetchLoopProfile } from "@/lib/loop/auth";
+import { LoopApiError } from "@/lib/loop/client";
 import { isDemoMode } from "@/lib/loop/config";
 import { DEMO_PROFILE } from "@/lib/loop/demo";
 import { OAUTH_STATE_COOKIE, OAUTH_VERIFIER_COOKIE } from "@/lib/auth/oauth-cookies";
@@ -97,6 +98,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.redirect(new URL("/dashboard", request.nextUrl.origin));
   } catch (err) {
-    return fail(request, "loop_exchange_failed", err instanceof Error ? err.message : "Unknown error");
+    // Surface LOOP's own wording — when the sandbox rejects us, its message
+    // names the actual problem far better than a generic failure would.
+    const detail =
+      err instanceof LoopApiError ? err.detail : err instanceof Error ? err.message : "Unknown error";
+    return fail(request, "loop_exchange_failed", detail);
   }
 }
