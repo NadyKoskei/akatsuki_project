@@ -161,19 +161,30 @@ npm run dev            # http://localhost:3000
 
 Fill in real sandbox credentials and the identical code path talks to LOOP. Set `LOOP_DEMO_MODE=false` to refuse to start without them.
 
+### How LOOP authentication actually works
+
+The sandbox is a **WSO2 API Manager** gateway. Two things follow from that, and both differ from a typical "Sign in with X":
+
+1. **Auth is machine-to-machine.** `POST /gateway/auth/1.0/oauth2/token` with `Basic(Consumer Key:Consumer Secret)` and `grant_type=client_credentials` returns a Bearer token for the *application*. There is no authorize screen, no consent, no per-user login anywhere in LOOP's API surface.
+2. **Every business request is signed.** Beyond the Bearer token, each call carries `timestamp`, a single-use `nonce`, and a `signature` — lowercase-hex HMAC-SHA256 over `merchantTill|timestamp|nonce`, keyed with **the till's own secret**.
+
+> The gateway answers *every* unauthenticated request — including paths that don't exist — with an identical 401. A 401 therefore tells you nothing about whether your URL is right.
+
 ### Sign-in flow
 
 ```
-/                          "Continue with LOOP" — the only auth control in the app
-  → /api/auth/loop/start   builds the authorize URL (PKCE S256 + CSRF state cookie)
-  → LOOP authorize screen  (skipped in seeded sandbox mode)
-  → /api/loop/callback     verifies state, exchanges the code, reads the account,
-                           creates-or-updates the user, encrypts the token set,
-                           seeds starter Boards, pulls history, mints the session
-  → /dashboard             gated by middleware; no session, no page
+/                            Till number + till secret — the only auth control in the app
+  → /api/auth/loop/connect   fetches an app token, then makes a REAL signed history
+                             call to LOOP. If the signature verifies, the caller
+                             holds that till's secret; if not, no session is minted.
+                             Then: create-or-update the user, encrypt and store the
+                             till secret, seed Boards, pull history, mint the session
+  → /dashboard               gated by middleware; no session, no page
 ```
 
-There is no email, password, invite, or admin path — `upsertUserFromLoop()` is called from the callback and nowhere else, so a Chroma user cannot exist without a LOOP authorisation.
+Since LOOP has no user login, **the credential a person proves is possession of a till's signing secret** — and the proof is a live call to LOOP, not a local string comparison. `upsertUserFromLoop()` is called from that route and nowhere else, so a Chroma user still cannot exist without working LOOP credentials. There is no email, password, invite, or admin path.
+
+Because a till *receives* money, history items are payments **in** from customers; money **out** comes from the payment APIs that standing orders drive.
 
 ## Environment Variables
 
@@ -228,10 +239,8 @@ You can also paste `lib/db/schema.sql` straight into the Supabase SQL editor. Th
 |---|---|
 | `DATABASE_URL` | the Supabase pooler URI |
 | `JWT_SECRET` | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
-| `LOOP_CLIENT_ID` / `LOOP_API_KEY` / `LOOP_API_SECRET` | from the LOOP sandbox developer portal |
-| `LOOP_API_BASE_URL` | `https://sandbox.loop.co.ke/api` |
+| `LOOP_CONSUMER_KEY` / `LOOP_CONSUMER_SECRET` | Developer Portal → Application → Sandbox Keys → Generate Keys |
 | `APP_BASE_URL` | `https://your-app.vercel.app` |
-| `LOOP_REDIRECT_URI` | `https://your-app.vercel.app/api/loop/callback` |
 | `LOOP_IPN_CALLBACK_URL` | `https://your-app.vercel.app/api/loop/ipn` |
 | `CRON_SECRET` | required for standing orders to run; Vercel Cron sends it as a bearer token |
 | `AI_API_KEY` | optional; without it insights come from the rules engine |

@@ -14,13 +14,18 @@ export interface User {
   createdAt: string;
 }
 
+/**
+ * What Chroma holds for a connected LOOP account.
+ *
+ * LOOP has no per-user login, so the credential is the merchant till plus its
+ * signing secret. Encrypted at rest and never sent to the browser; the app's
+ * own Bearer token is fetched separately and lives only in memory.
+ */
 export interface LoopTokenSet {
-  accessToken: string;
-  refreshToken?: string;
-  /** epoch ms */
-  expiresAt: number;
-  scope?: string;
-  tokenType: string;
+  merchantTill: string;
+  tillSecret: string;
+  /** ISO 8601 */
+  connectedAt: string;
 }
 
 export type TransactionSource = "till" | "paybill" | "transfer" | "checkout" | "request_to_pay";

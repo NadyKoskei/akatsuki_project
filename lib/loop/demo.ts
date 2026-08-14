@@ -1,7 +1,6 @@
 import "server-only";
 import type { TransactionDirection, TransactionSource } from "@/lib/types";
 import type { RawLoopTransaction } from "./transactions";
-import type { LoopProfile } from "./auth";
 
 /**
  * Seeded sandbox fallback.
@@ -14,12 +13,8 @@ import type { LoopProfile } from "./auth";
  * The generator is seeded, so the same account always gets the same history.
  */
 
-export const DEMO_PROFILE: LoopProfile = {
-  accountRef: "LOOP-SBX-0714582",
-  name: "Amina Wanjiru",
-  phoneNumber: "+254 7•• ••• 582",
-  userType: "business",
-};
+/** The sandbox tills LOOP documents; the demo defaults to the middle one. */
+export const DEMO_TILLS = ["133238", "133239", "133240"] as const;
 
 /** mulberry32 — small, fast, deterministic. */
 function seeded(seed: number): () => number {

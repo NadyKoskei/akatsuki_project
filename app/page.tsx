@@ -7,12 +7,10 @@ import { BOARD_COLORS } from "@/lib/palette";
 export const dynamic = "force-dynamic";
 
 const ERRORS: Record<string, string> = {
-  auth_required: "That page needs a connected LOOP account. Sign in through LOOP to continue.",
-  loop_denied: "LOOP didn't authorise the connection. Nothing was shared with Chroma.",
-  invalid_callback: "LOOP's response was missing something. Start sign-in again.",
-  state_expired: "Sign-in took too long and expired. Try once more.",
-  state_mismatch: "The sign-in couldn't be verified. Start again from this page.",
-  loop_exchange_failed: "Chroma couldn't complete the handshake with LOOP.",
+  auth_required: "That page needs a connected LOOP till. Connect one to continue.",
+  invalid_till: "Check the till number and secret and try again.",
+  till_rejected: "LOOP wouldn't verify that till. The number or the secret is wrong.",
+  connect_failed: "Chroma couldn't finish connecting that till.",
   config: "Chroma isn't configured for LOOP yet.",
 };
 
@@ -114,25 +112,52 @@ export default async function LandingPage({
             </p>
           )}
 
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-            {/* The only way in. There is no email/password path anywhere in Chroma. */}
-            <a
-              href="/api/auth/loop/start"
-              className="group inline-flex items-center justify-center gap-2.5 rounded-xl px-5 py-3.5 text-[15px] font-semibold text-white shadow-[var(--shadow-lift)] transition-transform duration-200 hover:-translate-y-0.5"
+          {/*
+            The only way in. LOOP's API has no user login, so what a person
+            proves here is possession of a till's signing secret — verified by a
+            real signed call to LOOP before any session exists.
+          */}
+          <form method="post" action="/api/auth/loop/connect" className="mt-8 max-w-md">
+            <div className="grid gap-3 sm:grid-cols-[1fr_1.3fr]">
+              <label className="block text-[12px] font-medium text-[color:var(--text-secondary)]">
+                Till number
+                <input
+                  name="merchantTill"
+                  required
+                  inputMode="numeric"
+                  placeholder={demo ? "133239" : "Your till"}
+                  className="tabular mt-1.5 w-full rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-1)] px-3 py-2.5 text-[14px] font-normal text-[color:var(--text-primary)] outline-none"
+                />
+              </label>
+              <label className="block text-[12px] font-medium text-[color:var(--text-secondary)]">
+                Till secret
+                <input
+                  name="tillSecret"
+                  type="password"
+                  required={!demo}
+                  placeholder={demo ? "not needed in demo mode" : "Signing secret"}
+                  className="mt-1.5 w-full rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-1)] px-3 py-2.5 text-[14px] font-normal text-[color:var(--text-primary)] outline-none"
+                />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              className="mt-3 inline-flex w-full items-center justify-center gap-2.5 rounded-xl px-5 py-3.5 text-[15px] font-semibold text-white shadow-[var(--shadow-lift)] transition-transform duration-200 hover:-translate-y-0.5 sm:w-auto"
               style={{ background: "var(--series-1)" }}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M10 17l5-5-5-5M15 12H3" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              Continue with LOOP
-            </a>
-            <p className="text-[13px] leading-snug text-[color:var(--text-muted)]">
-              A LOOP account is the only way in.
-              <br />
-              No Chroma password, ever.
+              Connect LOOP till
+            </button>
+
+            <p className="mt-3 text-[13px] leading-snug text-[color:var(--text-muted)]">
+              A LOOP till is the only way in — no Chroma password, ever. Chroma signs a real request to LOOP to check
+              the secret is yours, then stores it encrypted.
             </p>
-          </div>
+          </form>
 
           {demo && (
             <p className="mt-6 max-w-md rounded-xl border border-dashed px-3.5 py-3 text-[13px] leading-relaxed text-[color:var(--text-secondary)]">

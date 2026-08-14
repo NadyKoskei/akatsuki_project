@@ -1,5 +1,5 @@
 import "server-only";
-import { fetchLoopTransactions, normaliseTransaction } from "@/lib/loop/transactions";
+import { fetchLoopTransactions, type TillCredentials } from "@/lib/loop/transactions";
 import { isDemoMode } from "@/lib/loop/config";
 import { BOARD_COLORS } from "@/lib/palette";
 import {
@@ -25,19 +25,16 @@ export interface SyncResult {
  */
 export async function syncFromLoop(opts: {
   userId: string;
-  accountRef: string;
-  accessToken: string;
+  credentials: TillCredentials;
   sinceDays?: number;
+  limit?: number;
 }): Promise<SyncResult> {
-  const raw = await fetchLoopTransactions({
-    accessToken: opts.accessToken,
-    accountRef: opts.accountRef,
+  const normalised: Transaction[] = await fetchLoopTransactions({
+    credentials: opts.credentials,
+    userId: opts.userId,
     sinceDays: opts.sinceDays ?? 60,
+    limit: opts.limit ?? 100,
   });
-
-  const normalised = raw
-    .map((r) => normaliseTransaction(r, opts.userId))
-    .filter((t): t is Transaction => t !== null);
 
   const { inserted, updated } = await upsertTransactions(normalised);
   const syncedAt = new Date().toISOString();

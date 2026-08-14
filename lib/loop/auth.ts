@@ -1,144 +1,113 @@
 import "server-only";
 import crypto from "node:crypto";
-import { loopConfig } from "./config";
-import { loopRequest } from "./client";
-import type { LoopTokenSet, UserType } from "@/lib/types";
+import { loopConfig, isDemoMode } from "./config";
+import { LoopApiError } from "./client";
 
 /**
- * LOOP is the only identity provider Chroma has.
+ * LOOP authentication.
  *
- * There is no password, no email signup, no "create a Chroma account" path —
- * a user row is created exclusively as a side effect of a successful LOOP
- * authorisation callback. Chroma stores the returned token set, never raw
- * credentials.
+ * Machine-to-machine only: Basic(Consumer Key:Consumer Secret) against the
+ * Authorisation API returns a Bearer token good for the whole app. There is no
+ * per-user login in LOOP's API surface, so the thing a person proves when they
+ * sign in to Chroma is possession of a *till secret* — verified by making a
+ * real signed call to LOOP on their behalf (see verifyTill).
  */
 
-export interface OAuthStartState {
-  authorizeUrl: string;
-  state: string;
-  codeVerifier: string;
+interface CachedToken {
+  accessToken: string;
+  /** epoch ms */
+  expiresAt: number;
 }
 
-function base64url(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-/** Builds the LOOP authorize URL with PKCE (S256) and CSRF state. */
-export function buildAuthorizeUrl(): OAuthStartState {
-  const state = base64url(crypto.randomBytes(24));
-  const codeVerifier = base64url(crypto.randomBytes(48));
-  const codeChallenge = base64url(crypto.createHash("sha256").update(codeVerifier).digest());
-
-  const url = new URL(loopConfig.authorizeUrl);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", loopConfig.clientId ?? "");
-  url.searchParams.set("redirect_uri", loopConfig.redirectUri);
-  url.searchParams.set("scope", loopConfig.scopes);
-  url.searchParams.set("state", state);
-  url.searchParams.set("code_challenge", codeChallenge);
-  url.searchParams.set("code_challenge_method", "S256");
-
-  return { authorizeUrl: url.toString(), state, codeVerifier };
-}
+// One token per process, shared across requests — it's app-wide, not per user.
+const globalRef = globalThis as unknown as { __loopToken?: CachedToken };
 
 interface RawTokenResponse {
-  access_token: string;
-  refresh_token?: string;
+  access_token?: string;
   expires_in?: number;
   token_type?: string;
-  scope?: string;
+  error?: string;
+  error_description?: string;
 }
 
-function toTokenSet(raw: RawTokenResponse): LoopTokenSet {
-  return {
+/** Refresh a minute early so an in-flight call can't race the expiry. */
+function isFresh(token: CachedToken | undefined): token is CachedToken {
+  return Boolean(token && Date.now() < token.expiresAt - 60_000);
+}
+
+export async function getAccessToken(): Promise<string> {
+  if (isDemoMode()) return "demo-gateway-token";
+
+  const cached = globalRef.__loopToken;
+  if (isFresh(cached)) return cached.accessToken;
+
+  const { consumerKey, consumerSecret, tokenUrl } = loopConfig;
+  if (!consumerKey || !consumerSecret) {
+    throw new Error("LOOP_CONSUMER_KEY / LOOP_CONSUMER_SECRET are not configured.");
+  }
+
+  const basic = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
+
+  const res = await fetch(tokenUrl, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: new URLSearchParams({ grant_type: "client_credentials" }).toString(),
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new LoopApiError("auth/oauth2/token", res.status, text.slice(0, 400));
+
+  let raw: RawTokenResponse;
+  try {
+    raw = JSON.parse(text) as RawTokenResponse;
+  } catch {
+    throw new LoopApiError("auth/oauth2/token", res.status, text.slice(0, 400));
+  }
+
+  if (!raw.access_token) {
+    throw new LoopApiError("auth/oauth2/token", res.status, raw.error_description ?? raw.error ?? text.slice(0, 400));
+  }
+
+  const token: CachedToken = {
     accessToken: raw.access_token,
-    refreshToken: raw.refresh_token,
-    // Default to 30 min if the sandbox omits expires_in; refresh handles the rest.
-    expiresAt: Date.now() + (raw.expires_in ?? 1800) * 1000,
-    tokenType: raw.token_type ?? "Bearer",
-    scope: raw.scope,
+    expiresAt: Date.now() + (raw.expires_in ?? 3600) * 1000,
   };
+  globalRef.__loopToken = token;
+  return token.accessToken;
 }
 
-/** Exchanges the one-time authorization code for a token set. */
-export async function exchangeCodeForTokens(code: string, codeVerifier: string): Promise<LoopTokenSet> {
-  const raw = await loopRequest<RawTokenResponse>(loopConfig.tokenUrl, {
-    method: "POST",
-    retries: 2,
-    body: {
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: loopConfig.redirectUri,
-      client_id: loopConfig.clientId,
-      client_secret: loopConfig.apiSecret,
-      code_verifier: codeVerifier,
-    },
-  });
+/* ── Request signing ────────────────────────────────────────────────────── */
 
-  if (!raw?.access_token) throw new Error("LOOP token exchange returned no access_token");
-  return toTokenSet(raw);
+/**
+ * Lowercase hex HMAC-SHA256 over "merchantTill|timestamp|nonce", keyed with the
+ * till's secret. Base64 or uppercase hex will not verify.
+ */
+export function signRequest(merchantTill: string, timestamp: string, nonce: string, tillSecret: string): string {
+  return crypto
+    .createHmac("sha256", tillSecret)
+    .update(`${merchantTill}|${timestamp}|${nonce}`, "utf8")
+    .digest("hex");
 }
 
-export async function refreshTokens(refreshToken: string): Promise<LoopTokenSet> {
-  const raw = await loopRequest<RawTokenResponse>(loopConfig.tokenUrl, {
-    method: "POST",
-    retries: 2,
-    body: {
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: loopConfig.clientId,
-      client_secret: loopConfig.apiSecret,
-    },
-  });
-
-  if (!raw?.access_token) throw new Error("LOOP token refresh returned no access_token");
-  return toTokenSet(raw);
+/** ISO-8601 UTC, second precision — anything else is rejected as a replay. */
+export function loopTimestamp(at: Date = new Date()): string {
+  return `${at.toISOString().slice(0, 19)}Z`;
 }
 
-/** Refresh a minute before expiry so an in-flight request doesn't race the clock. */
-export function isExpired(tokens: LoopTokenSet): boolean {
-  return Date.now() > tokens.expiresAt - 60_000;
+/** Fresh lowercase UUID v4 per call; reuse inside the replay window is rejected. */
+export function loopNonce(): string {
+  return crypto.randomUUID().toLowerCase();
 }
 
-export interface LoopProfile {
-  accountRef: string;
-  name: string;
-  phoneNumber: string;
-  userType: UserType;
-}
-
-interface RawProfile {
-  id?: string;
-  account_id?: string;
-  account_reference?: string;
-  name?: string;
-  full_name?: string;
-  customer_name?: string;
-  phone?: string;
-  phone_number?: string;
-  msisdn?: string;
-  account_type?: string;
-  customer_type?: string;
-}
-
-/** Pulls the connected account's profile and normalises the field-name variance. */
-export async function fetchLoopProfile(accessToken: string): Promise<LoopProfile> {
-  const raw = await loopRequest<RawProfile>("/accounts/me", { accessToken });
-
-  const accountRef = raw.account_reference ?? raw.account_id ?? raw.id;
-  if (!accountRef) throw new Error("LOOP profile response carried no account reference");
-
-  const rawType = (raw.account_type ?? raw.customer_type ?? "").toLowerCase();
-  const userType: UserType = rawType.includes("business") || rawType.includes("merchant")
-    ? "business"
-    : rawType.includes("student")
-      ? "student"
-      : "individual";
-
-  return {
-    accountRef: String(accountRef),
-    name: raw.name ?? raw.full_name ?? raw.customer_name ?? "LOOP account",
-    phoneNumber: raw.phone_number ?? raw.phone ?? raw.msisdn ?? "",
-    userType,
-  };
+/**
+ * Envelope reference. Must be unique per call — LOOP refuses a repeat as a
+ * duplicate, even for the same till.
+ */
+export function loopTxnReference(): string {
+  return crypto.randomUUID();
 }

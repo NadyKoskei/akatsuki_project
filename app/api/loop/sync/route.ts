@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getLoopAccessToken, getSession } from "@/lib/auth/session";
+import { getTillCredentials, getSession } from "@/lib/auth/session";
 import { syncFromLoop } from "@/lib/services/sync";
 import { LoopApiError } from "@/lib/loop/client";
 import { getLastSync } from "@/lib/db/store";
@@ -13,18 +13,14 @@ export async function POST() {
   if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
-    const accessToken = await getLoopAccessToken(session.id);
-    const result = await syncFromLoop({
-      userId: session.id,
-      accountRef: session.loopAccountRef,
-      accessToken,
-    });
+    const credentials = await getTillCredentials(session.id);
+    const result = await syncFromLoop({ userId: session.id, credentials });
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof LoopApiError) {
       if (err.isAuthFailure) {
         return NextResponse.json(
-          { error: "LOOP rejected the stored authorisation. Sign in through LOOP again." },
+          { error: `LOOP rejected the stored till credentials. Reconnect the till. ${err.detail}` },
           { status: 401 },
         );
       }

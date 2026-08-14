@@ -1,5 +1,5 @@
 import "server-only";
-import { getLoopAccessToken } from "@/lib/auth/session";
+import { getTillCredentials } from "@/lib/auth/session";
 import { isDemoMode } from "@/lib/loop/config";
 import { initiateTransfer } from "@/lib/loop/payments";
 import { listDueStandingOrders, updateStandingOrder, upsertTransactions } from "@/lib/db/store";
@@ -51,14 +51,13 @@ export async function runStandingOrder(order: StandingOrder): Promise<StandingOr
   const reference = referenceFor(order, now);
 
   try {
-    const accessToken = await getLoopAccessToken(order.userId);
+    const credentials = await getTillCredentials(order.userId);
 
     const result = await initiateTransfer({
-      accessToken,
-      accountRef: order.destination,
+      credentials,
       amount: order.amount,
-      currency: order.currency,
       destination: order.destination,
+      accountNumber: order.reference ?? reference,
       narrative: order.name,
       clientReference: reference,
     });

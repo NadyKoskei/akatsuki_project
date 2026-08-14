@@ -1,10 +1,10 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, SESSION_MAX_AGE_S, signSession, verifySession } from "./token";
-import { getTokens, saveTokens, getUser } from "@/lib/db/store";
-import { isExpired, refreshTokens } from "@/lib/loop/auth";
+import { getTokens, getUser } from "@/lib/db/store";
 import { isDemoMode } from "@/lib/loop/config";
-import type { LoopTokenSet, SessionUser } from "@/lib/types";
+import type { TillCredentials } from "@/lib/loop/transactions";
+import type { SessionUser } from "@/lib/types";
 
 /** A LOOP authorisation is the only thing that mints a session. */
 export async function createSession(user: SessionUser): Promise<void> {
@@ -46,26 +46,19 @@ export async function requireSession(): Promise<SessionUser> {
 }
 
 /**
- * Returns a usable LOOP access token for the session, refreshing it first if
- * it's within a minute of expiry. Demo sessions get a sentinel token — the LOOP
- * modules branch on demo mode before ever putting it on the wire.
+ * The till credentials Chroma holds for this user — the till number and the
+ * secret its requests are signed with. The app's Bearer token is fetched
+ * separately (it's app-wide, not per user).
  */
-export async function getLoopAccessToken(userId: string): Promise<string> {
-  const tokens = await getTokens(userId);
+export async function getTillCredentials(userId: string): Promise<TillCredentials> {
+  const stored = await getTokens(userId);
 
-  if (!tokens) {
-    if (isDemoMode()) return "demo-session-token";
+  if (!stored) {
+    // A demo session has no real till; the LOOP modules branch on demo mode
+    // before any of this reaches the wire.
+    if (isDemoMode()) return { merchantTill: "133239", tillSecret: "demo-till-secret" };
     throw new UnauthorizedError();
   }
 
-  if (!isExpired(tokens)) return tokens.accessToken;
-
-  if (!tokens.refreshToken) {
-    if (isDemoMode()) return tokens.accessToken;
-    throw new UnauthorizedError();
-  }
-
-  const refreshed: LoopTokenSet = await refreshTokens(tokens.refreshToken);
-  await saveTokens(userId, refreshed);
-  return refreshed.accessToken;
+  return { merchantTill: stored.merchantTill, tillSecret: stored.tillSecret };
 }

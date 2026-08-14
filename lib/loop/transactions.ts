@@ -1,25 +1,71 @@
 import "server-only";
-import { loopRequest } from "./client";
-import { isDemoMode } from "./config";
+import { loopConfig, isDemoMode } from "./config";
+import { LoopApiError } from "./client";
+import { getAccessToken, loopNonce, loopTimestamp, loopTxnReference, signRequest } from "./auth";
 import { demoTransactions } from "./demo";
 import type { Transaction, TransactionDirection, TransactionSource } from "@/lib/types";
 
 /**
- * The raw shape LOOP's transaction endpoints return. Sandbox responses vary in
- * field naming between endpoints, so every alias we've seen is accepted here
- * and collapsed by `normaliseTransaction` — that function is the only place in
- * Chroma that knows LOOP's field names.
+ * Merchant transaction history.
+ *
+ * POST to the history API with a Bearer token and a signed body. Two things
+ * about this endpoint are easy to get wrong and both are enforced by LOOP:
+ * the envelope reference must be unique per call (a repeat is refused as a
+ * duplicate), and the outcome lives in the body's statusCode — the HTTP status
+ * is 200 even for failures, so branching on HTTP alone reads errors as success.
  */
+
+export interface LoopHistoryItem {
+  txnReference?: string;
+  transactionRef?: string;
+  status?: string;
+  resultCode?: string;
+  resultDesc?: string;
+  finalState?: boolean;
+  /** Major units as a string, e.g. "1200" = KES 1,200. */
+  amount?: string | number;
+  currency?: string;
+  tillNo?: string;
+  /** The paying customer's number. */
+  msisdn?: string;
+  /** "2026-08-12 11:42:08" — no zone marker; read as UTC. */
+  initiatedAt?: string;
+  lastUpdatedAt?: string;
+  retryCount?: number;
+}
+
+interface HistoryEnvelope {
+  statusCode?: number;
+  message?: string;
+  data?: {
+    serviceTransactionStatus?: string;
+    requestReference?: string;
+    txnReference?: string;
+    response?: {
+      rspMessage?: string;
+      count?: number;
+      limit?: number;
+      transactionRef?: string;
+      tillNo?: string;
+      transactions?: LoopHistoryItem[];
+    };
+  };
+}
+
+export interface TillCredentials {
+  merchantTill: string;
+  tillSecret: string;
+}
+
+/** Raw shape kept for the demo dataset and the IPN handler. */
 export interface RawLoopTransaction {
   transaction_id?: string;
   id?: string;
   reference?: string;
   amount?: number | string;
   currency?: string;
-  /** "debit" | "credit" | "DR" | "CR" */
   type?: string;
   direction?: string;
-  /** "till" | "paybill" | "transfer" | "checkout" | "request_to_pay" */
   channel?: string;
   source?: string;
   counterparty_name?: string;
@@ -33,13 +79,119 @@ export interface RawLoopTransaction {
   account_reference?: string;
 }
 
-interface RawTransactionPage {
-  data?: RawLoopTransaction[];
-  transactions?: RawLoopTransaction[];
-  results?: RawLoopTransaction[];
-  next_cursor?: string;
-  has_more?: boolean;
+/* ── The live call ──────────────────────────────────────────────────────── */
+
+export async function fetchTillHistory(
+  credentials: TillCredentials,
+  limit = 100,
+): Promise<{ items: LoopHistoryItem[]; message: string }> {
+  const token = await getAccessToken();
+  const timestamp = loopTimestamp();
+  const nonce = loopNonce();
+
+  const body = {
+    serviceCode: "MRCHNT_TXN_HISTORY",
+    // Unique per call — LOOP rejects a repeat as a duplicate.
+    txnReference: loopTxnReference(),
+    requestParameters: {
+      merchantTill: credentials.merchantTill,
+      // A JSON number, not a string, and not part of the signed string.
+      limit,
+      timestamp,
+      nonce,
+      signature: signRequest(credentials.merchantTill, timestamp, nonce, credentials.tillSecret),
+    },
+  };
+
+  const res = await fetch(loopConfig.historyUrl, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const text = await res.text();
+  let envelope: HistoryEnvelope;
+  try {
+    envelope = JSON.parse(text) as HistoryEnvelope;
+  } catch {
+    throw new LoopApiError("transaction-history", res.status, text.slice(0, 400));
+  }
+
+  // The body's statusCode is authoritative; HTTP is 200 even on failure.
+  const status = envelope.statusCode ?? res.status;
+  if (status !== 200) {
+    throw new LoopApiError("transaction-history", status, envelope.message ?? text.slice(0, 400));
+  }
+
+  return {
+    items: envelope.data?.response?.transactions ?? [],
+    message: envelope.message ?? "ok",
+  };
 }
+
+/** A cheap signed call that proves the caller holds this till's secret. */
+export async function verifyTill(credentials: TillCredentials): Promise<boolean> {
+  if (isDemoMode()) return true;
+  await fetchTillHistory(credentials, 1);
+  return true;
+}
+
+/* ── Normalisation ──────────────────────────────────────────────────────── */
+
+/** "2026-08-12 11:42:08" has no zone marker; read it as UTC. */
+function parseLoopDate(value: string | undefined): string | null {
+  if (!value) return null;
+  const iso = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+/** LOOP sends major units as a string; Chroma stores minor units. */
+function toMinorUnits(amount: string | number | undefined): number {
+  const parsed = typeof amount === "number" ? amount : Number.parseFloat(String(amount ?? "0").replace(/[^0-9.]/g, ""));
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
+}
+
+/**
+ * A till receives money, so history items are payments *in* from customers.
+ * Money out comes from the payment APIs (standing orders) and shows as debits.
+ */
+export function normaliseHistoryItem(item: LoopHistoryItem, userId: string): Transaction | null {
+  const reference = item.txnReference ?? item.transactionRef;
+  const timestamp = parseLoopDate(item.initiatedAt ?? item.lastUpdatedAt);
+  if (!reference || !timestamp) return null;
+
+  // A failed payment never moved money; importing it would misstate every total.
+  if ((item.status ?? "").toUpperCase() === "FAILED") return null;
+
+  return {
+    id: `txn_${userId}_${reference}`,
+    userId,
+    loopTransactionId: String(reference),
+    amount: toMinorUnits(item.amount),
+    currency: item.currency ?? "KES",
+    direction: "credit",
+    timestamp,
+    counterparty: item.msisdn ? maskMsisdn(item.msisdn) : `Till ${item.tillNo ?? ""}`.trim(),
+    source: "till",
+    description: item.resultDesc ?? item.status ?? "",
+    reference: String(reference),
+    boardId: null,
+  };
+}
+
+/** Customer numbers are personal data; keep only enough to tell payers apart. */
+function maskMsisdn(msisdn: string): string {
+  const digits = msisdn.replace(/\D/g, "");
+  return digits.length <= 4 ? msisdn : `${digits.slice(0, 6)}•••${digits.slice(-3)}`;
+}
+
+/* ── Demo-mode path (unchanged shape, same normaliser downstream) ───────── */
 
 function pickSource(raw: RawLoopTransaction): TransactionSource {
   const v = (raw.channel ?? raw.source ?? "").toLowerCase();
@@ -56,13 +208,11 @@ function pickDirection(raw: RawLoopTransaction): TransactionDirection {
   return "debit";
 }
 
-/** Minor units. Accepts "1,250.50" and 125050 alike; always returns a positive int. */
 function pickAmount(raw: RawLoopTransaction): number {
   const v = raw.amount;
   if (typeof v === "number") return Math.abs(Math.round(v));
   const parsed = Number.parseFloat(String(v ?? "0").replace(/[^0-9.-]/g, ""));
   if (!Number.isFinite(parsed)) return 0;
-  // A decimal point means the sandbox sent major units; scale to cents.
   const isMajor = String(v).includes(".");
   return Math.abs(Math.round(isMajor ? parsed * 100 : parsed));
 }
@@ -91,42 +241,22 @@ export function normaliseTransaction(raw: RawLoopTransaction, userId: string): T
   };
 }
 
-function pageItems(page: RawTransactionPage | RawLoopTransaction[]): RawLoopTransaction[] {
-  if (Array.isArray(page)) return page;
-  return page.data ?? page.transactions ?? page.results ?? [];
-}
-
 /**
- * Pulls transaction history for the connected account.
- * In demo mode this returns the seeded set — same raw shape, same normaliser.
+ * Pulls history for a till, or the seeded set when running in demo mode.
+ * Returns Chroma-shaped transactions either way.
  */
 export async function fetchLoopTransactions(opts: {
-  accessToken: string;
-  accountRef: string;
+  credentials: TillCredentials;
+  userId: string;
+  limit?: number;
   sinceDays?: number;
-  maxPages?: number;
-}): Promise<RawLoopTransaction[]> {
-  const { accessToken, accountRef, sinceDays = 60, maxPages = 5 } = opts;
-
-  if (isDemoMode()) return demoTransactions(accountRef, sinceDays);
-
-  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
-  const collected: RawLoopTransaction[] = [];
-  let cursor: string | undefined;
-
-  for (let page = 0; page < maxPages; page++) {
-    const res = await loopRequest<RawTransactionPage | RawLoopTransaction[]>("/transactions", {
-      accessToken,
-      query: { account_reference: accountRef, from: since, limit: 100, cursor },
-    });
-
-    const items = pageItems(res);
-    collected.push(...items);
-
-    const next = Array.isArray(res) ? undefined : res.next_cursor;
-    if (!next || items.length === 0) break;
-    cursor = next;
+}): Promise<Transaction[]> {
+  if (isDemoMode()) {
+    return demoTransactions(opts.credentials.merchantTill, opts.sinceDays ?? 60)
+      .map((raw) => normaliseTransaction(raw, opts.userId))
+      .filter((t): t is Transaction => t !== null);
   }
 
-  return collected;
+  const { items } = await fetchTillHistory(opts.credentials, opts.limit ?? 100);
+  return items.map((item) => normaliseHistoryItem(item, opts.userId)).filter((t): t is Transaction => t !== null);
 }

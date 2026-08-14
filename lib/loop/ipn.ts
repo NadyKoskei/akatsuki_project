@@ -27,12 +27,13 @@ export function verifyIpnSignature(rawBody: string, signatureHeader: string | nu
   // endpoint is public, and an unsigned payload would let anyone write
   // transactions into an account. The demo path is /api/loop/ipn/demo, which
   // is behind a session instead.
-  if (!loopConfig.apiSecret) return false;
+  const secret = process.env.LOOP_IPN_SECRET?.trim() || loopConfig.consumerSecret;
+  if (!secret) return false;
   if (!signatureHeader) return false;
 
   // Accept both "sha256=<hex>" and a bare hex digest.
   const provided = signatureHeader.trim().replace(/^sha256=/i, "");
-  const expected = crypto.createHmac("sha256", loopConfig.apiSecret).update(rawBody, "utf8").digest("hex");
+  const expected = crypto.createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
 
   const a = Buffer.from(provided, "hex");
   const b = Buffer.from(expected, "hex");

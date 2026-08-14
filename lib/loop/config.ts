@@ -1,54 +1,68 @@
 import "server-only";
 
 /**
- * All LOOP configuration is read here and nowhere else, so there is exactly one
- * place to point at a different sandbox host or endpoint layout.
+ * LOOP sandbox configuration.
  *
- * Sandbox only. Per hackathon Terms 2.4-2.5 this build must never be pointed at
- * a production LOOP host; `assertSandbox()` enforces that at boot.
+ * The sandbox is a WSO2 API Manager gateway. Every API is published under
+ * https://sandbox.loop.co.ke/gateway/<context>/<version>, and the gateway
+ * rejects any unauthenticated request — including paths that don't exist — with
+ * a blanket 401, so a 401 tells you nothing about whether a path is right.
+ *
+ * Auth is machine-to-machine: Basic(Consumer Key:Consumer Secret) against the
+ * Authorisation API returns a Bearer token. There is no user-facing consent
+ * screen anywhere in this API surface.
+ *
+ * Sandbox only. assertSandbox() enforces that at sign-in, per hackathon
+ * Terms 2.4-2.5.
  */
 
-/**
- * Reads an env var, treating the placeholders shipped in .env.example
- * (`your_loop_sandbox_client_id`, …) as "not set" — otherwise copying the
- * example file would silently point the app at the sandbox with junk
- * credentials instead of falling back to demo mode.
- */
 function env(name: string): string | undefined {
   const v = process.env[name]?.trim();
   if (!v) return undefined;
+  // Placeholders from .env.example are "not set", not junk credentials.
   if (/^your_/i.test(v) || v === "generate_a_random_secret") return undefined;
   return v;
 }
 
-const BASE = env("LOOP_API_BASE_URL") ?? "https://sandbox.loop.co.ke/api";
-
-/** Strip a trailing /api (or any trailing slash) to get the auth-server origin. */
-function authOrigin(base: string): string {
-  return base.replace(/\/+$/, "").replace(/\/api$/, "");
-}
+const GATEWAY = (env("LOOP_GATEWAY_URL") ?? "https://sandbox.loop.co.ke/gateway").replace(/\/+$/, "");
 
 export const loopConfig = {
-  baseUrl: BASE.replace(/\/+$/, ""),
-  clientId: env("LOOP_CLIENT_ID"),
-  apiKey: env("LOOP_API_KEY"),
-  apiSecret: env("LOOP_API_SECRET"),
-  redirectUri: env("LOOP_REDIRECT_URI") ?? `${env("APP_BASE_URL") ?? "http://localhost:3000"}/api/loop/callback`,
+  gatewayUrl: GATEWAY,
+
+  /** Authorisation API — POST, Basic auth, grant_type=client_credentials. */
+  tokenUrl: env("LOOP_TOKEN_URL") ?? `${GATEWAY}/auth/1.0/oauth2/token`,
+
+  /** Merchant transaction history — POST, Bearer + signed body. */
+  historyUrl: env("LOOP_HISTORY_URL") ?? `${GATEWAY}/transaction-history/1.0.0/services/process-request`,
+
+  /** Merchant transaction status inquiry. */
+  inquiryUrl: env("LOOP_INQUIRY_URL") ?? `${GATEWAY}/transaction-inquiry/1.0.0/services/process-request`,
+
+  /** Outgoing payments, used by standing orders. */
+  payToPaybillUrl: env("LOOP_PAY_PAYBILL_URL") ?? `${GATEWAY}/pay-to-paybill/1.0/services/process-request`,
+  payToTillUrl: env("LOOP_PAY_TILL_URL") ?? `${GATEWAY}/pay-to-looptill/1.0/services/process-request`,
+  sendMoneyUrl: env("LOOP_SEND_MONEY_URL") ?? `${GATEWAY}/send-money-loop/1.0/services/process-request`,
+
+  /** From Developer Portal -> Application -> Sandbox Keys -> Generate Keys. */
+  consumerKey: env("LOOP_CONSUMER_KEY") ?? env("LOOP_CLIENT_ID"),
+  consumerSecret: env("LOOP_CONSUMER_SECRET") ?? env("LOOP_API_SECRET"),
+
   ipnCallbackUrl: env("LOOP_IPN_CALLBACK_URL"),
-  authorizeUrl: env("LOOP_AUTHORIZE_URL") ?? `${authOrigin(BASE)}/oauth/authorize`,
-  tokenUrl: env("LOOP_TOKEN_URL") ?? `${authOrigin(BASE)}/oauth/token`,
-  scopes: env("LOOP_SCOPES") ?? "accounts.read transactions.read payments.request",
   appBaseUrl: env("APP_BASE_URL") ?? "http://localhost:3000",
 } as const;
 
+/** Both halves are needed: the key alone can't mint a token. */
+export function hasLiveCredentials(): boolean {
+  return Boolean(loopConfig.consumerKey && loopConfig.consumerSecret);
+}
+
 /**
- * Demo mode is the seeded-sandbox fallback the README calls for: if the judges'
- * network can't reach the LOOP sandbox, or credentials aren't provisioned yet,
- * sign-in still runs through the same LOOP callback shape against seeded data.
+ * Seeded sandbox fallback — the README's guard against a rate-limited or
+ * unreachable sandbox on presentation day.
  *
- *   LOOP_DEMO_MODE=auto  (default) -> demo only when credentials are missing
- *   LOOP_DEMO_MODE=true            -> always demo
- *   LOOP_DEMO_MODE=false           -> never demo; missing credentials is a hard error
+ *   auto  (default) -> demo only when credentials are missing
+ *   true            -> always demo
+ *   false           -> never demo; missing credentials is a hard error
  */
 export function isDemoMode(): boolean {
   const flag = (env("LOOP_DEMO_MODE") ?? "auto").toLowerCase();
@@ -57,24 +71,19 @@ export function isDemoMode(): boolean {
   return !hasLiveCredentials();
 }
 
-export function hasLiveCredentials(): boolean {
-  return Boolean(loopConfig.clientId && loopConfig.apiSecret);
-}
-
-/** Throws when configuration would put this build outside the sandbox. */
 export function assertSandbox(): void {
   const host = (() => {
     try {
-      return new URL(loopConfig.baseUrl).hostname;
+      return new URL(loopConfig.gatewayUrl).hostname;
     } catch {
-      throw new Error(`LOOP_API_BASE_URL is not a valid URL: ${loopConfig.baseUrl}`);
+      throw new Error(`LOOP_GATEWAY_URL is not a valid URL: ${loopConfig.gatewayUrl}`);
     }
   })();
 
-  const sandboxish = /(^|\.)sandbox\.|^sandbox\.|(^|\.)uat\.|localhost|127\.0\.0\.1/.test(host);
+  const sandboxish = /(^|\.)sandbox\.|(^|\.)uat\.|localhost|127\.0\.0\.1/.test(host);
   if (!sandboxish) {
     throw new Error(
-      `Refusing to start: LOOP_API_BASE_URL host "${host}" does not look like a sandbox host. ` +
+      `Refusing to start: LOOP gateway host "${host}" does not look like a sandbox. ` +
         `This build is sandbox-only (hackathon Terms 2.4-2.5).`,
     );
   }
@@ -82,7 +91,7 @@ export function assertSandbox(): void {
 
 export function missingCredentialError(): Error {
   return new Error(
-    "LOOP sandbox credentials are not configured (LOOP_CLIENT_ID / LOOP_API_SECRET) and " +
-      "LOOP_DEMO_MODE=false. Copy .env.example to .env and fill in your sandbox credentials.",
+    "LOOP sandbox credentials are not configured (LOOP_CONSUMER_KEY / LOOP_CONSUMER_SECRET) and " +
+      "LOOP_DEMO_MODE=false. Generate them at Developer Portal -> Application -> Sandbox Keys.",
   );
 }

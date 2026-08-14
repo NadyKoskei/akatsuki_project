@@ -1,155 +1,114 @@
 import "server-only";
-import { loopRequest } from "./client";
 import { loopConfig, isDemoMode } from "./config";
+import { LoopApiError } from "./client";
+import { getAccessToken, loopNonce, loopTimestamp, loopTxnReference, signRequest } from "./auth";
+import type { TillCredentials } from "./transactions";
 
 /**
- * Request to Pay and Checkout — the money-in side for business Boards.
+ * Outgoing payments — what standing orders use.
  *
- * Chroma does not move money on its own: it asks LOOP to raise a request, and
- * the resulting transaction comes back through the normal IPN/history path and
- * gets logged to the Board that raised it.
+ * Same envelope as the history API: serviceCode + a unique txnReference, with
+ * requestParameters carrying the signed fields. The signature covers
+ * "merchantTill|timestamp|nonce" exactly as before, so a payment is signed with
+ * the same till secret that proves the account.
  */
 
-export interface PaymentRequestInput {
-  accessToken: string;
-  accountRef: string;
-  /** minor units */
-  amount: number;
-  currency?: string;
-  payerPhone: string;
-  narrative: string;
-  /** echoed back on the resulting transaction so we can auto-file it */
-  boardId: string;
-}
-
-export interface PaymentRequestResult {
-  requestId: string;
-  status: "pending" | "sent" | "failed";
-  /** Checkout only: hosted page the payer opens. */
-  checkoutUrl?: string;
-  reference: string;
-}
-
-function demoReference(boardId: string): string {
-  return `CHROMA-${boardId.slice(-6).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
-}
-
 export interface TransferInput {
-  accessToken: string;
-  accountRef: string;
-  /** minor units */
+  credentials: TillCredentials;
+  /** Minor units, as stored. LOOP wants whole KES. */
   amount: number;
-  currency?: string;
-  /** Paybill, till, or account reference the money goes to. */
+  /** Paybill or till number being paid. */
   destination: string;
+  /** Account reference the paybill expects (invoice, meter, account no.). */
+  accountNumber: string;
   narrative: string;
-  /** Our own reference, echoed back on the resulting transaction. */
   clientReference: string;
 }
 
 export interface TransferResult {
-  /** LOOP's id for the resulting transaction, when it returns one immediately. */
   loopTransactionId: string | null;
   status: "sent" | "pending" | "failed";
   reference: string;
+  message: string;
+}
+
+interface PaymentEnvelope {
+  statusCode?: number;
+  message?: string;
+  data?: {
+    serviceTransactionStatus?: string;
+    requestReference?: string;
+    txnReference?: string;
+    response?: { transactionRef?: string; rspMessage?: string; status?: string };
+  };
 }
 
 /**
- * Outgoing payment, used by standing orders.
+ * Pays a paybill from the connected till.
  *
- * NOTE: the sandbox path is configurable because LOOP's outgoing-payment route
- * isn't one Chroma can verify from here — set LOOP_TRANSFER_PATH to whatever
- * your sandbox documents. Everything else (auth, retries, error shape) is the
- * shared client, so only the path and body keys would need adjusting.
+ * In demo mode nothing is sent — the caller synthesises the debit so the flow
+ * is demonstrable without moving sandbox money.
  */
 export async function initiateTransfer(input: TransferInput): Promise<TransferResult> {
   if (isDemoMode()) {
-    return { loopTransactionId: null, status: "sent", reference: input.clientReference };
+    return { loopTransactionId: null, status: "sent", reference: input.clientReference, message: "demo" };
   }
 
-  const path = process.env.LOOP_TRANSFER_PATH?.trim() || "/payments/transfer";
+  const token = await getAccessToken();
+  const timestamp = loopTimestamp();
+  const nonce = loopNonce();
+  const { merchantTill, tillSecret } = input.credentials;
 
-  const res = await loopRequest<{ transaction_id?: string; id?: string; status?: string }>(path, {
-    method: "POST",
-    accessToken: input.accessToken,
-    body: {
-      account_reference: input.accountRef,
-      amount: input.amount,
-      currency: input.currency ?? "KES",
-      destination: input.destination,
-      narrative: input.narrative,
-      client_reference: input.clientReference,
-      callback_url: loopConfig.ipnCallbackUrl,
+  const body = {
+    serviceCode: "MRCHNT_PAYMENTS",
+    txnReference: loopTxnReference(),
+    requestParameters: {
+      merchantTill,
+      merchantRcvTill: input.destination,
+      accountNumber: input.accountNumber || input.clientReference,
+      // LOOP takes whole KES; Chroma stores minor units.
+      amount: Math.round(input.amount / 100),
+      channel: "LOOP",
+      timestamp,
+      nonce,
+      signature: signRequest(merchantTill, timestamp, nonce, tillSecret),
     },
+  };
+
+  const res = await fetch(loopConfig.payToPaybillUrl, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
   });
 
-  return {
-    loopTransactionId: res.transaction_id ?? res.id ?? null,
-    status: (res.status as TransferResult["status"]) ?? "pending",
-    reference: input.clientReference,
-  };
-}
-
-export async function createRequestToPay(input: PaymentRequestInput): Promise<PaymentRequestResult> {
-  const reference = demoReference(input.boardId);
-
-  if (isDemoMode()) {
-    return { requestId: `RTP-${reference}`, status: "sent", reference };
+  const text = await res.text();
+  let envelope: PaymentEnvelope;
+  try {
+    envelope = JSON.parse(text) as PaymentEnvelope;
+  } catch {
+    throw new LoopApiError("pay-to-paybill", res.status, text.slice(0, 400));
   }
 
-  const res = await loopRequest<{ request_id?: string; id?: string; status?: string }>("/payments/request-to-pay", {
-    method: "POST",
-    accessToken: input.accessToken,
-    body: {
-      account_reference: input.accountRef,
-      amount: input.amount,
-      currency: input.currency ?? "KES",
-      payer: { phone_number: input.payerPhone },
-      narrative: input.narrative,
-      client_reference: reference,
-      callback_url: loopConfig.ipnCallbackUrl,
-    },
-  });
-
-  return {
-    requestId: String(res.request_id ?? res.id ?? reference),
-    status: (res.status as PaymentRequestResult["status"]) ?? "pending",
-    reference,
-  };
-}
-
-export async function createCheckout(input: Omit<PaymentRequestInput, "payerPhone">): Promise<PaymentRequestResult> {
-  const reference = demoReference(input.boardId);
-
-  if (isDemoMode()) {
+  // As with history, the body's statusCode is the authoritative outcome.
+  const status = envelope.statusCode ?? res.status;
+  if (status !== 200) {
     return {
-      requestId: `CHK-${reference}`,
-      status: "sent",
-      reference,
-      checkoutUrl: `${loopConfig.appBaseUrl}/demo/checkout/${reference}`,
+      loopTransactionId: null,
+      status: "failed",
+      reference: input.clientReference,
+      message: envelope.message ?? `LOOP returned ${status}`,
     };
   }
 
-  const res = await loopRequest<{ checkout_id?: string; id?: string; status?: string; checkout_url?: string; url?: string }>(
-    "/checkout/sessions",
-    {
-      method: "POST",
-      accessToken: input.accessToken,
-      body: {
-        account_reference: input.accountRef,
-        amount: input.amount,
-        currency: input.currency ?? "KES",
-        narrative: input.narrative,
-        client_reference: reference,
-        callback_url: loopConfig.ipnCallbackUrl,
-      },
-    },
-  );
-
   return {
-    requestId: String(res.checkout_id ?? res.id ?? reference),
-    status: (res.status as PaymentRequestResult["status"]) ?? "pending",
-    checkoutUrl: res.checkout_url ?? res.url,
-    reference,
+    loopTransactionId: envelope.data?.response?.transactionRef ?? envelope.data?.requestReference ?? null,
+    status: "sent",
+    reference: input.clientReference,
+    message: envelope.message ?? "accepted",
   };
 }
