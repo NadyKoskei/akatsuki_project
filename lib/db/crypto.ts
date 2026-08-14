@@ -1,5 +1,6 @@
 import "server-only";
 import crypto from "node:crypto";
+import { requireSecret } from "@/lib/env";
 
 /**
  * LOOP token sets are encrypted at rest (objective 10: token-only auth,
@@ -11,10 +12,9 @@ let cachedKey: Buffer | null = null;
 
 function key(): Buffer {
   if (cachedKey) return cachedKey;
-  const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 16) {
-    throw new Error("JWT_SECRET must be set to at least 16 characters (see .env.example).");
-  }
+  // Same reader as the session signer — a different view of the value here
+  // would derive a different key and silently invalidate stored tokens.
+  const secret = requireSecret("JWT_SECRET");
   // hkdfSync returns an ArrayBuffer; wrap it so the cipher gets a Buffer.
   const derived = crypto.hkdfSync("sha256", Buffer.from(secret, "utf8"), Buffer.alloc(0), Buffer.from("chroma:token:v1"), 32);
   cachedKey = Buffer.from(derived);

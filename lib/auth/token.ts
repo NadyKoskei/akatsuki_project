@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
+import { requireSecret } from "@/lib/env";
 import type { SessionUser, UserType } from "@/lib/types";
 
 /**
@@ -19,11 +20,7 @@ const ISSUER = "chroma";
 const AUDIENCE = "chroma-app";
 
 function secretKey(): Uint8Array {
-  const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 16) {
-    throw new Error("JWT_SECRET must be set to at least 16 characters (see .env.example).");
-  }
-  return new TextEncoder().encode(secret);
+  return new TextEncoder().encode(requireSecret("JWT_SECRET"));
 }
 
 export interface SessionClaims extends SessionUser {
