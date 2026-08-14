@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "db:push": "node scripts/db-push.mjs"
+    "db:push": "node scripts/db-push.mjs",
+    "verify:signing": "node scripts/verify-signing.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
